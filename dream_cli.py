@@ -23,7 +23,7 @@ from datetime import datetime
 
 from ooda_memory.graph import MemoryGraph
 
-DEFAULT_VAULT = os.path.expanduser("~/.meshclaw/vault")
+DEFAULT_VAULT = os.path.expanduser("~/.engram/vault")
 GRAPH_FIELD_SEP = "<SEP>"
 
 

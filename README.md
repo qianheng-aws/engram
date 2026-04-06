@@ -77,7 +77,7 @@ git clone https://github.com/qianheng-aws/ooda-dream.git
 cd ooda-dream
 
 # 2. Initialize vault
-mkdir -p ~/.meshclaw/vault/{entities/{people,concepts,projects,tools,orgs},relations,communities,daily,dreams,patterns,preferences,_meta}
+mkdir -p ~/.engram/vault/{entities/{people,concepts,projects,tools,orgs},relations,communities,daily,dreams,patterns,preferences,_meta}
 
 # 3. Register as CC plugin
 # Add to ~/.claude/settings.json:
@@ -98,7 +98,7 @@ mkdir -p ~/.meshclaw/vault/{entities/{people,concepts,projects,tools,orgs},relat
 
 ```bash
 # 4. (Optional) Enable auto-capture on session end
-touch ~/.meshclaw/vault/_meta/hook-enabled
+touch ~/.engram/vault/_meta/hook-enabled
 ```
 
 ## 🎮 Commands
@@ -138,10 +138,10 @@ touch ~/.meshclaw/vault/_meta/hook-enabled
 
 ## 🗂️ Vault Structure
 
-Open `~/.meshclaw/vault/` in [Obsidian](https://obsidian.md) for graph visualization.
+Open `~/.engram/vault/` in [Obsidian](https://obsidian.md) for graph visualization.
 
 ```
-~/.meshclaw/vault/
+~/.engram/vault/
 ├── 📁 entities/              # Knowledge graph nodes
 │   ├── people/               #   PERSON entities
 │   ├── concepts/             #   Bugs, patterns, designs

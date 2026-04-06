@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-VAULT_DIR = Path.home() / ".meshclaw" / "vault"
+VAULT_DIR = Path.home() / ".engram" / "vault"
 QUEUE_DIR = VAULT_DIR / "_meta" / "queue"
 ENABLED_FLAG = VAULT_DIR / "_meta" / "hook-enabled"
 
