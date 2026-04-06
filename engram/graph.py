@@ -74,9 +74,8 @@ class MemoryGraph:
     def upsert_relation(self, source: str, target: str, attrs: dict):
         """Add or update a relation edge."""
         source, target = source.upper().strip(), target.upper().strip()
-        key = tuple(sorted([source, target]))
-        if self._graph.has_edge(*key):
-            existing = self._graph.edges[key]
+        if self._graph.has_edge(source, target):
+            existing = self._graph.edges[source, target]
             # Weight: use max instead of sum to prevent unbounded growth
             old_w = float(existing.get("weight", 1))
             new_w = float(attrs.get("weight", 1))

@@ -15,13 +15,12 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime
 
-from ooda_memory.graph import MemoryGraph
+from engram.graph import MemoryGraph
 
 DEFAULT_VAULT = os.path.expanduser("~/.engram/vault")
 GRAPH_FIELD_SEP = "<SEP>"
@@ -84,10 +83,17 @@ def cmd_replay(args):
             content = f.read()
         # Parse existing entity refs
         existing_entities = set(re.findall(r'\[\[([A-Z_]+)\]\]', content))
-        # Keep existing sessions section
-        if "## Sessions" in content:
-            idx = content.index("## Sessions")
-            existing_sessions = content[idx:].strip().split("\n")[2:]  # skip header + blank
+        # Keep existing summaries: extract bullet lines from ## Summary section
+        if "## Summary" in content:
+            idx = content.index("## Summary")
+            section = content[idx:]
+            # End at next ## heading or end of file
+            next_heading = section.find("\n## ", 1)
+            if next_heading != -1:
+                section = section[:next_heading]
+            for line in section.split("\n"):
+                if line.strip().startswith("- "):
+                    existing_sessions.append(line)
 
     entity_names = [e["name"] for e in entities]
     all_entities = existing_entities | set(entity_names)
@@ -102,12 +108,12 @@ def cmd_replay(args):
         "## Summary", "",
     ]
 
-    # Append new summary
-    if existing_sessions:
-        for s in existing_sessions:
-            if s.strip():
-                lines.append(s)
-    lines.append(f"- {summary}")
+    # Append existing + new summary
+    for s in existing_sessions:
+        lines.append(s)
+    new_bullet = f"- {summary}"
+    if new_bullet not in existing_sessions:
+        lines.append(new_bullet)
     lines += ["", "## Entities", ""]
     for name in sorted(all_entities):
         e = next((x for x in entities if x["name"] == name), None)
@@ -205,6 +211,22 @@ def cmd_integrate(args):
     }))
 
 
+_TYPE_FOLDER = {
+    "PERSON": "people", "CONCEPT": "concepts", "PROJECT": "projects",
+    "TOOL": "tools", "ORGANIZATION": "orgs", "ORG": "orgs",
+    "EVENT": "concepts", "LOCATION": "concepts",
+}
+
+
+def _remove_entity_md(vault: str, name: str, entity_type: str = "CONCEPT"):
+    """Remove an entity's markdown file from the vault."""
+    folder = _TYPE_FOLDER.get(entity_type.upper(), "concepts")
+    fname = re.sub(r'[<>:"/\\|?*]', "_", name)[:200] + ".md"
+    path = os.path.join(vault, "entities", folder, fname)
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def _merge_entity(graph, canonical: str, alias: str):
     """Merge alias entity into canonical: move edges, merge descriptions, delete alias."""
     G = graph._graph
@@ -228,6 +250,9 @@ def _merge_entity(graph, canonical: str, alias: str):
         else:
             G.add_edge(canonical, neighbor, **edge_data)
 
+    # Remove alias markdown file from vault
+    _remove_entity_md(graph.vault_dir, alias, G.nodes[alias].get("entity_type", "CONCEPT"))
+
     G.remove_node(alias)
 
 
@@ -250,6 +275,8 @@ def cmd_prune(args):
                 # Save to archive
                 with open(os.path.join(archive_dir, f"{name}.json"), "w") as f:
                     json.dump({"name": name, **attrs, "archived": datetime.now().isoformat()}, f, indent=2)
+                # Remove markdown file from vault
+                _remove_entity_md(args.vault, name, attrs.get("entity_type", "CONCEPT"))
                 graph._graph.remove_node(name)
                 archived.append(name)
         graph.save()

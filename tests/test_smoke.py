@@ -7,7 +7,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from ooda_memory.graph import MemoryGraph
+from engram.graph import MemoryGraph
 
 
 def test_graph():
