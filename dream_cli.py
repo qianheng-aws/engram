@@ -2,24 +2,31 @@
 """OODA Dream CLI — called by CC /dream command.
 
 Usage:
-    dream_cli.py replay --stdin          # Read extracted JSON from stdin, write to graph + vault
-    dream_cli.py integrate --vault PATH  # Merge duplicate entities
-    dream_cli.py prune --vault PATH      # Decay and archive old entities
-    dream_cli.py status --vault PATH     # Show vault statistics
-    dream_cli.py query --vault PATH --question "..."  # Search knowledge graph
+    dream_cli.py replay --stdin --vault PATH
+    dream_cli.py integrate --vault PATH [--stdin]  # --stdin for merge instructions
+    dream_cli.py prune --vault PATH [--stdin]      # --stdin for archive confirmation
+    dream_cli.py abstract --vault PATH
+    dream_cli.py save-pattern --vault PATH --stdin
+    dream_cli.py status --vault PATH
+    dream_cli.py query --vault PATH --question "..."
 """
 
 import argparse
 import json
 import os
+import re
+import shutil
 import sys
+from collections import defaultdict
 from datetime import datetime
 
 from ooda_memory.graph import MemoryGraph
 
+DEFAULT_VAULT = os.path.expanduser("~/.meshclaw/vault")
+GRAPH_FIELD_SEP = "<SEP>"
 
-DEFAULT_VAULT = os.path.expanduser("~/vault")
 
+# ── replay ──────────────────────────────────────────────
 
 def cmd_replay(args):
     """Process CC-extracted entities/relations JSON from stdin."""
@@ -32,7 +39,6 @@ def cmd_replay(args):
     date = data.get("date", datetime.now().strftime("%Y-%m-%d"))
     summary = data.get("daily_summary", "")
 
-    # Upsert entities
     for e in entities:
         graph.upsert_entity(e["name"], {
             "entity_type": e.get("entity_type", "CONCEPT"),
@@ -41,57 +47,64 @@ def cmd_replay(args):
             "last_updated": date,
         })
 
-    # Upsert relations
     for r in relations:
         graph.upsert_relation(r["source"], r["target"], {
             "description": r.get("description", ""),
             "weight": r.get("weight", 1.0),
         })
 
-    # Save graph + export markdown
     graph.save()
 
-    # Write daily note
+    # ── FIX: daily note dedup — replace same-date note instead of appending ──
     daily_dir = os.path.join(vault, "daily")
     os.makedirs(daily_dir, exist_ok=True)
     daily_path = os.path.join(daily_dir, f"{date}.md")
 
+    # Accumulate sessions for the day
+    existing_entities = set()
+    existing_sessions = []
+    if os.path.exists(daily_path):
+        with open(daily_path, "r") as f:
+            content = f.read()
+        # Parse existing entity refs
+        existing_entities = set(re.findall(r'\[\[([A-Z_]+)\]\]', content))
+        # Keep existing sessions section
+        if "## Sessions" in content:
+            idx = content.index("## Sessions")
+            existing_sessions = content[idx:].strip().split("\n")[2:]  # skip header + blank
+
     entity_names = [e["name"] for e in entities]
+    all_entities = existing_entities | set(entity_names)
+
     lines = [
         "---",
         f"date: {date}",
-        f"entities_extracted: {json.dumps(entity_names)}",
-        f"relations_count: {len(relations)}",
+        f"entities: {json.dumps(sorted(all_entities))}",
+        f"sessions: {len(existing_sessions) + 1}",
         "---", "",
         f"# {date}", "",
-        summary, "",
-        "## Entities", "",
+        "## Summary", "",
     ]
-    for e in entities:
-        lines.append(f"- [[{e['name']}]] ({e.get('entity_type', '?')}): {e.get('description', '')[:100]}")
 
-    # Append if daily note already exists
-    mode = "a" if os.path.exists(daily_path) else "w"
-    with open(daily_path, mode, encoding="utf-8") as f:
-        if mode == "a":
-            f.write("\n---\n\n")
+    # Append new summary
+    if existing_sessions:
+        for s in existing_sessions:
+            if s.strip():
+                lines.append(s)
+    lines.append(f"- {summary}")
+    lines += ["", "## Entities", ""]
+    for name in sorted(all_entities):
+        e = next((x for x in entities if x["name"] == name), None)
+        if e:
+            lines.append(f"- [[{name}]] ({e.get('entity_type', '?')}): {e.get('description', '')[:100]}")
+        else:
+            lines.append(f"- [[{name}]]")
+
+    with open(daily_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-    # Clear any queued breadcrumbs for today
-    queue_dir = os.path.join(vault, "_meta", "queue")
-    if os.path.isdir(queue_dir):
-        for fname in os.listdir(queue_dir):
-            if fname.endswith(".json"):
-                qpath = os.path.join(queue_dir, fname)
-                try:
-                    with open(qpath) as f:
-                        q = json.load(f)
-                    if q.get("status") == "pending":
-                        q["status"] = "processed"
-                        with open(qpath, "w") as f:
-                            json.dump(q, f)
-                except Exception:
-                    pass
+    # Clear queue
+    _clear_queue(vault)
 
     print(json.dumps({
         "status": "ok",
@@ -103,13 +116,46 @@ def cmd_replay(args):
     }))
 
 
-def cmd_integrate(args):
-    """Find and report duplicate entities for CC to merge."""
-    graph = MemoryGraph(args.vault)
-    names = graph.all_entity_names()
+def _clear_queue(vault):
+    queue_dir = os.path.join(vault, "_meta", "queue")
+    if not os.path.isdir(queue_dir):
+        return
+    for fname in os.listdir(queue_dir):
+        if fname.endswith(".json"):
+            qpath = os.path.join(queue_dir, fname)
+            try:
+                with open(qpath) as f:
+                    q = json.load(f)
+                if q.get("status") == "pending":
+                    q["status"] = "processed"
+                    with open(qpath, "w") as f:
+                        json.dump(q, f)
+            except Exception:
+                pass
 
-    # Simple duplicate detection: Levenshtein-like grouping by shared tokens
-    from collections import defaultdict
+
+# ── integrate ───────────────────────────────────────────
+
+def cmd_integrate(args):
+    """Find duplicates, or execute merge instructions from stdin."""
+    graph = MemoryGraph(args.vault)
+
+    if args.stdin:
+        # Execute merge: {"merges": [{"canonical": "A", "aliases": ["B", "C"]}]}
+        data = json.load(sys.stdin)
+        merged = []
+        for m in data.get("merges", []):
+            canonical = m["canonical"].upper().strip()
+            for alias in m.get("aliases", []):
+                alias = alias.upper().strip()
+                _merge_entity(graph, canonical, alias)
+                merged.append(f"{alias} → {canonical}")
+        graph.save()
+        print(json.dumps({"status": "ok", "merged": merged}))
+        return
+
+    # Detection mode
+    names = graph.all_entity_names()
     token_map = defaultdict(set)
     for name in names:
         for token in name.split("_"):
@@ -123,21 +169,75 @@ def cmd_integrate(args):
             key = frozenset(group)
             if key not in seen:
                 seen.add(key)
-                candidates.append(list(group))
+                # Include descriptions for CC to judge
+                details = []
+                for n in group:
+                    attrs = graph.get_entity(n)
+                    desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+                    details.append({"name": n, "description": desc, "degree": graph._graph.degree(n)})
+                candidates.append(details)
 
     print(json.dumps({
         "status": "ok",
         "total_entities": len(names),
         "duplicate_candidates": candidates[:20],
-        "message": "Review candidates and merge with: echo '{...}' | dream_cli.py replay --stdin",
+        "message": "Review candidates. To merge, pipe: {\"merges\": [{\"canonical\": \"KEEP_NAME\", \"aliases\": [\"REMOVE_NAME\"]}]} | dream_cli.py integrate --vault PATH --stdin",
     }))
 
 
-def cmd_prune(args):
-    """Report entities by decay score for CC to decide on archival."""
-    graph = MemoryGraph(args.vault)
-    today = datetime.now()
+def _merge_entity(graph, canonical: str, alias: str):
+    """Merge alias entity into canonical: move edges, merge descriptions, delete alias."""
+    G = graph._graph
+    if alias not in G or canonical not in G:
+        return
 
+    # Merge descriptions
+    alias_desc = G.nodes[alias].get("description", "")
+    canon_desc = G.nodes[canonical].get("description", "")
+    if alias_desc and alias_desc not in canon_desc:
+        G.nodes[canonical]["description"] = f"{canon_desc}{GRAPH_FIELD_SEP}{alias_desc}" if canon_desc else alias_desc
+
+    # Move edges from alias to canonical
+    for neighbor in list(G.neighbors(alias)):
+        if neighbor == canonical:
+            continue
+        edge_data = dict(G.edges[alias, neighbor])
+        if G.has_edge(canonical, neighbor):
+            existing = G.edges[canonical, neighbor]
+            existing["weight"] = float(existing.get("weight", 0)) + float(edge_data.get("weight", 0))
+        else:
+            G.add_edge(canonical, neighbor, **edge_data)
+
+    G.remove_node(alias)
+
+
+# ── prune ───────────────────────────────────────────────
+
+def cmd_prune(args):
+    """Score entities by decay, or execute archive from stdin."""
+    graph = MemoryGraph(args.vault)
+
+    if args.stdin:
+        # Execute archive: {"archive": ["ENTITY_A", "ENTITY_B"]}
+        data = json.load(sys.stdin)
+        archived = []
+        archive_dir = os.path.join(args.vault, "_meta", "archive")
+        os.makedirs(archive_dir, exist_ok=True)
+        for name in data.get("archive", []):
+            name = name.upper().strip()
+            attrs = graph.get_entity(name)
+            if attrs:
+                # Save to archive
+                with open(os.path.join(archive_dir, f"{name}.json"), "w") as f:
+                    json.dump({"name": name, **attrs, "archived": datetime.now().isoformat()}, f, indent=2)
+                graph._graph.remove_node(name)
+                archived.append(name)
+        graph.save()
+        print(json.dumps({"status": "ok", "archived": archived}))
+        return
+
+    # Report mode
+    today = datetime.now()
     scores = []
     for name in graph.all_entity_names():
         attrs = graph.get_entity(name)
@@ -162,76 +262,64 @@ def cmd_prune(args):
         "total_entities": len(scores),
         "fading": fading[:20],
         "archivable": archivable[:20],
-        "message": "Review and confirm archival. Fading entities will have descriptions simplified.",
+        "message": "To archive, pipe: {\"archive\": [\"ENTITY_A\"]} | dream_cli.py prune --vault PATH --stdin",
     }))
 
 
-def cmd_status(args):
-    """Show vault statistics."""
-    graph = MemoryGraph(args.vault)
-    vault = args.vault
-
-    # Count files
-    daily_count = len([f for f in os.listdir(os.path.join(vault, "daily")) if f.endswith(".md")]) if os.path.isdir(os.path.join(vault, "daily")) else 0
-    pattern_count = len([f for f in os.listdir(os.path.join(vault, "patterns")) if f.endswith(".md")]) if os.path.isdir(os.path.join(vault, "patterns")) else 0
-    dream_count = len([f for f in os.listdir(os.path.join(vault, "dreams")) if f.endswith(".md")]) if os.path.isdir(os.path.join(vault, "dreams")) else 0
-
-    # Count pending queue
-    queue_dir = os.path.join(vault, "_meta", "queue")
-    pending = []
-    if os.path.isdir(queue_dir):
-        for fname in sorted(os.listdir(queue_dir)):
-            if fname.endswith(".json"):
-                try:
-                    with open(os.path.join(queue_dir, fname)) as f:
-                        q = json.load(f)
-                    if q.get("status") == "pending":
-                        pending.append({
-                            "session_id": q.get("session_id", "?")[:12],
-                            "timestamp": q.get("timestamp", "?"),
-                            "preview": q.get("last_message_preview", "")[:100],
-                        })
-                except Exception:
-                    pass
-
-    print(json.dumps({
-        "nodes": graph.node_count,
-        "edges": graph.edge_count,
-        "daily_notes": daily_count,
-        "patterns": pattern_count,
-        "dreams": dream_count,
-        "pending_sessions": len(pending),
-        "pending": pending[:5],
-        "vault_path": vault,
-    }, indent=2))
-
+# ── query (enhanced with graph traversal) ───────────────
 
 def cmd_query(args):
-    """Search knowledge graph and return context for CC."""
+    """Search knowledge graph with keyword match + multi-hop traversal."""
     graph = MemoryGraph(args.vault)
     question = args.question
     names = graph.all_entity_names()
+    tokens = [t.upper() for t in question.split() if len(t) > 2]
 
-    # Return entity list + any exact matches for CC to do routing
-    # CC will pick relevant entities and ask for details
-    exact = [n for n in names if any(token.upper() in n for token in question.split() if len(token) > 2)]
+    # 1. Keyword match on entity names
+    matched = [n for n in names if any(tok in n for tok in tokens)]
 
+    # 2. Also match on descriptions
+    if len(matched) < 3:
+        for n in names:
+            if n in matched:
+                continue
+            attrs = graph.get_entity(n)
+            desc = (attrs.get("description", "") or "").lower()
+            if any(tok.lower() in desc for tok in tokens):
+                matched.append(n)
+            if len(matched) >= 10:
+                break
+
+    # 3. Multi-hop: expand to neighbors of matched entities
+    expanded = set(matched)
+    for name in matched[:5]:
+        for neighbor, _ in graph.get_neighbors(name):
+            expanded.add(neighbor)
+
+    # 4. Build rich context
     context_parts = []
-    for name in exact[:10]:
+    for name in matched[:10]:
         attrs = graph.get_entity(name)
         neighbors = graph.get_neighbors(name)
-        desc = (attrs.get("description", "") or "").split("<SEP>")[0]
-        neighbor_strs = [f"[[{n}]]: {d.get('description', '').split('<SEP>')[0][:60]}" for n, d in neighbors[:5]]
-        context_parts.append(f"## {name}\n{desc}\nRelations: {', '.join(neighbor_strs)}")
+        desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
+        neighbor_strs = []
+        for n, d in neighbors[:8]:
+            ndesc = (d.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:80]
+            weight = d.get("weight", "?")
+            neighbor_strs.append(f"  - [[{n}]]: {ndesc} (w:{weight})")
+        context_parts.append(f"## {name}\n{desc}\n### Relations\n" + "\n".join(neighbor_strs))
 
     print(json.dumps({
         "question": question,
-        "matched_entities": exact[:10],
+        "matched_entities": matched[:10],
+        "expanded_entities": sorted(expanded - set(matched))[:10],
         "all_entities": names,
         "context": "\n\n".join(context_parts),
-        "message": "Use context to answer. If no match, pick relevant entities from all_entities list.",
+        "message": "Use context to answer. expanded_entities are 1-hop neighbors that may be relevant.",
     }, indent=2))
 
+
+# ── abstract ────────────────────────────────────────────
 
 def cmd_abstract(args):
     """Gather daily notes + existing patterns for CC to analyze."""
@@ -240,7 +328,6 @@ def cmd_abstract(args):
     pattern_dir = os.path.join(vault, "patterns")
     os.makedirs(pattern_dir, exist_ok=True)
 
-    # Read recent daily notes (last 14 days or all if fewer)
     dailies = {}
     if os.path.isdir(daily_dir):
         for fname in sorted(os.listdir(daily_dir), reverse=True):
@@ -250,7 +337,6 @@ def cmd_abstract(args):
             if len(dailies) >= 14:
                 break
 
-    # Read existing patterns
     patterns = {}
     if os.path.isdir(pattern_dir):
         for fname in os.listdir(pattern_dir):
@@ -278,20 +364,15 @@ def cmd_save_pattern(args):
         fname = name.replace(" ", "-").lower() + ".md"
         evidence = p.get("evidence", [])
         confidence = p.get("confidence", 0.5)
-
         if confidence < 0.5:
             continue
 
         lines = [
-            "---",
-            f"name: {name}",
-            f"confidence: {confidence}",
+            "---", f"name: {name}", f"confidence: {confidence}",
             f"evidence_count: {len(evidence)}",
             f"last_updated: {datetime.now().strftime('%Y-%m-%d')}",
-            "---", "",
-            f"# {name}", "",
-            p.get("description", ""), "",
-            "## Evidence", "",
+            "---", "", f"# {name}", "",
+            p.get("description", ""), "", "## Evidence", "",
         ]
         for e in evidence:
             lines.append(f"- [[{e}]]")
@@ -302,6 +383,52 @@ def cmd_save_pattern(args):
 
     print(json.dumps({"status": "ok", "patterns_saved": saved}))
 
+
+# ── status ──────────────────────────────────────────────
+
+def cmd_status(args):
+    """Show vault statistics."""
+    graph = MemoryGraph(args.vault)
+    vault = args.vault
+
+    def count_md(d):
+        p = os.path.join(vault, d)
+        return len([f for f in os.listdir(p) if f.endswith(".md")]) if os.path.isdir(p) else 0
+
+    queue_dir = os.path.join(vault, "_meta", "queue")
+    pending = []
+    if os.path.isdir(queue_dir):
+        for fname in sorted(os.listdir(queue_dir)):
+            if fname.endswith(".json"):
+                try:
+                    with open(os.path.join(queue_dir, fname)) as f:
+                        q = json.load(f)
+                    if q.get("status") == "pending":
+                        pending.append({
+                            "session_id": q.get("session_id", "?")[:12],
+                            "timestamp": q.get("timestamp", "?"),
+                            "preview": q.get("last_message_preview", "")[:100],
+                        })
+                except Exception:
+                    pass
+
+    # Entity list for dedup awareness
+    entities = sorted(graph.all_entity_names())
+
+    print(json.dumps({
+        "nodes": graph.node_count,
+        "edges": graph.edge_count,
+        "daily_notes": count_md("daily"),
+        "patterns": count_md("patterns"),
+        "dreams": count_md("dreams"),
+        "pending_sessions": len(pending),
+        "pending": pending[:5],
+        "entities": entities,
+        "vault_path": vault,
+    }, indent=2))
+
+
+# ── main ────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="OODA Dream CLI")

@@ -56,11 +56,16 @@ class MemoryGraph:
         name = name.upper().strip()
         if name in self._graph:
             existing = self._graph.nodes[name]
-            # Merge descriptions
+            # Merge descriptions: keep first + latest (cap at 2 to prevent bloat)
             old_desc = existing.get("description", "")
             new_desc = attrs.get("description", "")
             if new_desc and new_desc not in old_desc:
-                attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
+                parts = old_desc.split(GRAPH_FIELD_SEP) if old_desc else []
+                if len(parts) >= 2:
+                    # Keep first (original) + replace last with new
+                    attrs["description"] = f"{parts[0]}{GRAPH_FIELD_SEP}{new_desc}"
+                else:
+                    attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
             existing.update(attrs)
         else:
             self._graph.add_node(name, **attrs)
@@ -71,13 +76,19 @@ class MemoryGraph:
         key = tuple(sorted([source, target]))
         if self._graph.has_edge(*key):
             existing = self._graph.edges[key]
+            # Weight: use max instead of sum to prevent unbounded growth
             old_w = float(existing.get("weight", 1))
             new_w = float(attrs.get("weight", 1))
-            attrs["weight"] = old_w + new_w
+            attrs["weight"] = max(old_w, new_w)
+            # Description: keep first + latest
             old_desc = existing.get("description", "")
             new_desc = attrs.get("description", "")
             if new_desc and new_desc not in old_desc:
-                attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
+                parts = old_desc.split(GRAPH_FIELD_SEP) if old_desc else []
+                if len(parts) >= 2:
+                    attrs["description"] = f"{parts[0]}{GRAPH_FIELD_SEP}{new_desc}"
+                else:
+                    attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
             existing.update(attrs)
         else:
             self._graph.add_edge(source, target, **attrs)
