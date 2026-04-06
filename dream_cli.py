@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -24,6 +25,21 @@ from ooda_memory.graph import MemoryGraph
 
 DEFAULT_VAULT = os.path.expanduser("~/.meshclaw/vault")
 GRAPH_FIELD_SEP = "<SEP>"
+
+
+def _git_sync(vault: str, message: str = "auto-sync"):
+    """Auto commit + push vault if it's a git repo. Silent on failure."""
+    if not os.path.isdir(os.path.join(vault, ".git")):
+        return
+    try:
+        subprocess.run(["git", "add", "-A"], cwd=vault, capture_output=True, timeout=10)
+        # Only commit if there are changes
+        result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=vault, capture_output=True, timeout=5)
+        if result.returncode != 0:  # has changes
+            subprocess.run(["git", "commit", "-m", message], cwd=vault, capture_output=True, timeout=10)
+            subprocess.run(["git", "push"], cwd=vault, capture_output=True, timeout=30)
+    except Exception:
+        pass  # Never fail the dream because of git
 
 
 # ── replay ──────────────────────────────────────────────
@@ -106,6 +122,9 @@ def cmd_replay(args):
     # Clear queue
     _clear_queue(vault)
 
+    # Sync vault to git
+    _git_sync(vault, f"dream replay {date}: +{len(entities)} entities, +{len(relations)} relations")
+
     print(json.dumps({
         "status": "ok",
         "entities_added": len(entities),
@@ -151,6 +170,7 @@ def cmd_integrate(args):
                 _merge_entity(graph, canonical, alias)
                 merged.append(f"{alias} → {canonical}")
         graph.save()
+        _git_sync(args.vault, f"dream integrate: merged {len(merged)} entities")
         print(json.dumps({"status": "ok", "merged": merged}))
         return
 
@@ -233,6 +253,7 @@ def cmd_prune(args):
                 graph._graph.remove_node(name)
                 archived.append(name)
         graph.save()
+        _git_sync(args.vault, f"dream prune: archived {len(archived)} entities")
         print(json.dumps({"status": "ok", "archived": archived}))
         return
 
@@ -381,6 +402,7 @@ def cmd_save_pattern(args):
             f.write("\n".join(lines) + "\n")
         saved.append(name)
 
+    _git_sync(vault, f"dream abstract: {len(saved)} patterns")
     print(json.dumps({"status": "ok", "patterns_saved": saved}))
 
 
