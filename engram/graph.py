@@ -175,7 +175,7 @@ class MemoryGraph:
         if self._graph.number_of_nodes() < 3:
             return []
 
-        # Louvain needs connected components; work on largest
+        # Louvain handles disconnected graphs — each component is partitioned independently
         communities_raw = nx.community.louvain_communities(
             self._graph, weight="weight", seed=42
         )

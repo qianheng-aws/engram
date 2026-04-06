@@ -5,6 +5,7 @@ Usage:
     engram_cli.py replay --stdin --vault PATH
     engram_cli.py integrate --vault PATH [--stdin]  # --stdin for merge instructions
     engram_cli.py prune --vault PATH [--stdin]      # --stdin for archive confirmation
+    engram_cli.py community --vault PATH [--stdin]   # --stdin for community summaries
     engram_cli.py abstract --vault PATH
     engram_cli.py save-pattern --vault PATH --stdin
     engram_cli.py status --vault PATH
@@ -323,6 +324,12 @@ def cmd_community(args):
     if args.stdin:
         # Save community summaries: {"communities": [{"id": 0, "title": "...", "summary": "...", "members": ["A", "B"]}]}
         data = json.load(sys.stdin)
+        # Clear old community files before writing new ones
+        comm_dir = os.path.join(args.vault, "communities")
+        if os.path.isdir(comm_dir):
+            for fname in os.listdir(comm_dir):
+                if fname.endswith(".md"):
+                    os.remove(os.path.join(comm_dir, fname))
         saved = []
         for c in data.get("communities", []):
             path = graph.export_community(
@@ -391,13 +398,50 @@ def cmd_query(args):
             neighbor_strs.append(f"  - [[{n}]]: {ndesc} (w:{weight})")
         context_parts.append(f"## {name}\n{desc}\n### Relations\n" + "\n".join(neighbor_strs))
 
+    # 5. Load community context for matched entities
+    community_context = []
+    comm_dir = os.path.join(args.vault, "communities")
+    if os.path.isdir(comm_dir):
+        matched_set = set(matched)
+        for fname in os.listdir(comm_dir):
+            if not fname.endswith(".md"):
+                continue
+            fpath = os.path.join(comm_dir, fname)
+            with open(fpath, "r") as f:
+                content = f.read()
+            # Check if any matched entity is a member of this community
+            community_members = set(re.findall(r'\[\[([A-Z_]+)\]\]', content))
+            if matched_set & community_members:
+                # Extract title and summary (skip frontmatter)
+                lines = content.split("\n")
+                in_frontmatter = False
+                title = ""
+                summary_lines = []
+                for line in lines:
+                    if line.strip() == "---":
+                        in_frontmatter = not in_frontmatter
+                        continue
+                    if in_frontmatter:
+                        continue
+                    if line.startswith("# "):
+                        title = line[2:].strip()
+                    elif line.startswith("## "):
+                        break
+                    elif title and line.strip():
+                        summary_lines.append(line.strip())
+                if title:
+                    community_context.append(f"**Community: {title}**\n" + " ".join(summary_lines))
+                    # Also expand with community members
+                    expanded |= community_members
+
     print(json.dumps({
         "question": question,
         "matched_entities": matched[:10],
         "expanded_entities": sorted(expanded - set(matched))[:10],
         "all_entities": names,
         "context": "\n\n".join(context_parts),
-        "message": "Use context to answer. expanded_entities are 1-hop neighbors that may be relevant.",
+        "community_context": community_context,
+        "message": "Use context + community_context to answer. expanded_entities include community co-members.",
     }, indent=2))
 
 
@@ -503,7 +547,7 @@ def cmd_status(args):
         "edges": graph.edge_count,
         "daily_notes": count_md("daily"),
         "patterns": count_md("patterns"),
-        "dreams": count_md("dreams"),
+        "communities": count_md("communities"),
         "pending_sessions": len(pending),
         "pending": pending[:5],
         "entities": entities,
