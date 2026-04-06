@@ -36,8 +36,8 @@ CC Session → /dream → Entity Extraction → Knowledge Graph → Obsidian Vau
 
 ```bash
 # 1. Clone
-git clone <repo-url> /path/to/ooda-memory
-cd /path/to/ooda-memory
+git clone https://github.com/qianheng-aws/ooda-dream.git /workplace/qianheng/ooda-memory
+cd /workplace/qianheng/ooda-memory
 
 # 2. Install dependencies
 pip install networkx
@@ -45,10 +45,12 @@ pip install networkx
 # 3. Initialize vault
 mkdir -p ~/.meshclaw/vault/{entities/{people,concepts,projects,tools,orgs},relations,communities,daily,dreams,patterns,preferences,_meta}
 
-# 4. Install CC plugin (option A: local marketplace)
-# Add to your marketplace's plugins array in .claude-plugin/marketplace.json:
-# {"name": "ooda-dream", "source": "./plugins/ooda-dream", "category": "productivity"}
-# Then enable in CC: /plugins → ooda-dream@your-marketplace → enable
+# 4. Register as CC plugin marketplace
+# Add to ~/.claude/settings.json:
+#   "extraKnownMarketplaces": {
+#     "ooda-dream": {"source": {"source": "directory", "path": "/path/to/ooda-memory"}}
+#   }
+#   "enabledPlugins": {"ooda-dream@ooda-dream": true}
 
 # 5. Enable auto-capture (optional)
 touch ~/.meshclaw/vault/_meta/hook-enabled

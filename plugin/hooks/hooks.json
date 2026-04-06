@@ -1,0 +1,17 @@
+{
+    "description": "OODA Dream — persistent memory via knowledge graph",
+    "hooks": {
+        "Stop": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/ooda-dream-hook Stop",
+                        "timeout": 5000
+                    }
+                ]
+            }
+        ]
+    }
+}

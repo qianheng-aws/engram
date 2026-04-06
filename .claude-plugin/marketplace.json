@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ooda-dream",
+  "description": "Persistent memory for Claude Code",
+  "owner": {
+    "name": "qianheng"
+  },
+  "plugins": [
+    {
+      "name": "ooda-dream",
+      "description": "Persistent memory — extract knowledge from sessions into an Obsidian vault knowledge graph",
+      "source": "./plugin",
+      "category": "productivity"
+    }
+  ]
+}
