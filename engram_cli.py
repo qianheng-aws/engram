@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""OODA Dream CLI — called by CC /dream command.
+"""Engram CLI — called by CC /engram command.
 
 Usage:
-    dream_cli.py replay --stdin --vault PATH
-    dream_cli.py integrate --vault PATH [--stdin]  # --stdin for merge instructions
-    dream_cli.py prune --vault PATH [--stdin]      # --stdin for archive confirmation
-    dream_cli.py abstract --vault PATH
-    dream_cli.py save-pattern --vault PATH --stdin
-    dream_cli.py status --vault PATH
-    dream_cli.py query --vault PATH --question "..."
+    engram_cli.py replay --stdin --vault PATH
+    engram_cli.py integrate --vault PATH [--stdin]  # --stdin for merge instructions
+    engram_cli.py prune --vault PATH [--stdin]      # --stdin for archive confirmation
+    engram_cli.py abstract --vault PATH
+    engram_cli.py save-pattern --vault PATH --stdin
+    engram_cli.py status --vault PATH
+    engram_cli.py query --vault PATH --question "..."
 """
 
 import argparse
@@ -39,7 +39,7 @@ def _git_sync(vault: str, message: str = "auto-sync"):
             subprocess.run(["git", "commit", "-m", message], cwd=vault, capture_output=True, timeout=10)
             subprocess.run(["git", "push"], cwd=vault, capture_output=True, timeout=30)
     except Exception:
-        pass  # Never fail the dream because of git
+        pass  # Never fail the engram because of git
 
 
 # ── replay ──────────────────────────────────────────────
@@ -123,7 +123,7 @@ def cmd_replay(args):
     _clear_queue(vault)
 
     # Sync vault to git
-    _git_sync(vault, f"dream replay {date}: +{len(entities)} entities, +{len(relations)} relations")
+    _git_sync(vault, f"engram replay {date}: +{len(entities)} entities, +{len(relations)} relations")
 
     print(json.dumps({
         "status": "ok",
@@ -170,7 +170,7 @@ def cmd_integrate(args):
                 _merge_entity(graph, canonical, alias)
                 merged.append(f"{alias} → {canonical}")
         graph.save()
-        _git_sync(args.vault, f"dream integrate: merged {len(merged)} entities")
+        _git_sync(args.vault, f"engram integrate: merged {len(merged)} entities")
         print(json.dumps({"status": "ok", "merged": merged}))
         return
 
@@ -201,7 +201,7 @@ def cmd_integrate(args):
         "status": "ok",
         "total_entities": len(names),
         "duplicate_candidates": candidates[:20],
-        "message": "Review candidates. To merge, pipe: {\"merges\": [{\"canonical\": \"KEEP_NAME\", \"aliases\": [\"REMOVE_NAME\"]}]} | dream_cli.py integrate --vault PATH --stdin",
+        "message": "Review candidates. To merge, pipe: {\"merges\": [{\"canonical\": \"KEEP_NAME\", \"aliases\": [\"REMOVE_NAME\"]}]} | engram_cli.py integrate --vault PATH --stdin",
     }))
 
 
@@ -253,7 +253,7 @@ def cmd_prune(args):
                 graph._graph.remove_node(name)
                 archived.append(name)
         graph.save()
-        _git_sync(args.vault, f"dream prune: archived {len(archived)} entities")
+        _git_sync(args.vault, f"engram prune: archived {len(archived)} entities")
         print(json.dumps({"status": "ok", "archived": archived}))
         return
 
@@ -283,7 +283,7 @@ def cmd_prune(args):
         "total_entities": len(scores),
         "fading": fading[:20],
         "archivable": archivable[:20],
-        "message": "To archive, pipe: {\"archive\": [\"ENTITY_A\"]} | dream_cli.py prune --vault PATH --stdin",
+        "message": "To archive, pipe: {\"archive\": [\"ENTITY_A\"]} | engram_cli.py prune --vault PATH --stdin",
     }))
 
 
@@ -368,7 +368,7 @@ def cmd_abstract(args):
     print(json.dumps({
         "daily_notes": dailies,
         "existing_patterns": patterns,
-        "message": "Analyze daily notes for recurring behaviors. Output JSON with new_patterns and updated_patterns arrays. Each pattern: {name, description, evidence: [dates], confidence: 0.0-1.0}. Pipe result to: dream_cli.py save-pattern --vault PATH --stdin",
+        "message": "Analyze daily notes for recurring behaviors. Output JSON with new_patterns and updated_patterns arrays. Each pattern: {name, description, evidence: [dates], confidence: 0.0-1.0}. Pipe result to: engram_cli.py save-pattern --vault PATH --stdin",
     }, indent=2))
 
 
@@ -402,7 +402,7 @@ def cmd_save_pattern(args):
             f.write("\n".join(lines) + "\n")
         saved.append(name)
 
-    _git_sync(vault, f"dream abstract: {len(saved)} patterns")
+    _git_sync(vault, f"engram abstract: {len(saved)} patterns")
     print(json.dumps({"status": "ok", "patterns_saved": saved}))
 
 
@@ -453,7 +453,7 @@ def cmd_status(args):
 # ── main ────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="OODA Dream CLI")
+    parser = argparse.ArgumentParser(description="Engram CLI")
     parser.add_argument("command", choices=["replay", "integrate", "prune", "abstract", "save-pattern", "status", "query"])
     parser.add_argument("--vault", default=DEFAULT_VAULT)
     parser.add_argument("--stdin", action="store_true")

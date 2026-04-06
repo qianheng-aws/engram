@@ -1,5 +1,5 @@
 {
-    "description": "OODA Dream — persistent memory via knowledge graph",
+    "description": "Engram — persistent memory via knowledge graph",
     "hooks": {
         "Stop": [
             {
@@ -7,7 +7,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/ooda-dream-hook Stop",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-hook Stop",
                         "timeout": 5000
                     }
                 ]

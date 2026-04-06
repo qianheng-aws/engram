@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 OODA Dream
+# 🧠 Engram
 
 **Persistent memory for Claude Code — your coding sessions become a knowledge graph**
 
@@ -9,7 +9,7 @@
 [![Claude Code Plugin](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 [![Dependencies](https://img.shields.io/badge/dependencies-1_(networkx)-green.svg)](#installation)
 
-*Like sleep consolidates human memory, `/dream` consolidates your coding sessions into reusable knowledge.*
+*Like sleep consolidates human memory, `/engram` consolidates your coding sessions into reusable knowledge.*
 
 </div>
 
@@ -17,10 +17,10 @@
 
 ## ✨ What It Does
 
-You work in Claude Code as usual. When you're done, run `/dream`. That's it.
+You work in Claude Code as usual. When you're done, run `/engram`. That's it.
 
 ```
-You: /dream
+You: /engram
 
 CC: Analyzing session... Found 5 entities, 3 relations.
     ✅ Saved to vault: STDERR_PIPE_BLOCKING, CLAUDE_SLACK_BRIDGE, ...
@@ -30,14 +30,14 @@ CC: Analyzing session... Found 5 entities, 3 relations.
 Behind the scenes:
 
 ```
-CC Session → /dream → Entity Extraction → Knowledge Graph → Obsidian Vault
+CC Session → /engram → Entity Extraction → Knowledge Graph → Obsidian Vault
                         (CC as LLM)        (NetworkX)       (Markdown + [[wikilinks]])
 ```
 
 Your knowledge accumulates across sessions. Query it anytime:
 
 ```
-You: /dream-query how did I fix the stderr bug?
+You: /engram-query how did I fix the stderr bug?
 
 CC: Found STDERR_PIPE_BLOCKING → Bug where claude process stderr fills 64KB
     pipe buffer, blocking stdout. Fixed by adding _drain_stderr async task.
@@ -52,7 +52,7 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 |:------|:-----|:----|
 | **🔍 Observe** | Capture session conversations | CC session JSONL parser |
 | **🧭 Orient** | Extract entities & relations | CC does entity extraction — no external API |
-| **🎯 Decide** | Consolidate memory | Dream 4-stage: replay → integrate → prune → abstract |
+| **🎯 Decide** | Consolidate memory | 4-stage: replay → integrate → prune → abstract |
 | **⚡ Act** | Persist to vault | Obsidian markdown + NetworkX GraphML |
 
 ### Zero External Dependencies
@@ -73,8 +73,8 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 
 ```bash
 # 1. Clone
-git clone https://github.com/qianheng-aws/ooda-dream.git
-cd ooda-dream
+git clone https://github.com/qianheng-aws/engram.git
+cd engram
 
 # 2. Initialize vault
 mkdir -p ~/.engram/vault/{entities/{people,concepts,projects,tools,orgs},relations,communities,daily,dreams,patterns,preferences,_meta}
@@ -86,12 +86,12 @@ mkdir -p ~/.engram/vault/{entities/{people,concepts,projects,tools,orgs},relatio
 ```jsonc
 {
   "extraKnownMarketplaces": {
-    "ooda-dream": {
-      "source": { "source": "directory", "path": "/path/to/ooda-dream" }
+    "engram": {
+      "source": { "source": "directory", "path": "/path/to/engram" }
     }
   },
   "enabledPlugins": {
-    "ooda-dream@ooda-dream": true
+    "engram@engram": true
   }
 }
 ```
@@ -105,22 +105,22 @@ touch ~/.engram/vault/_meta/hook-enabled
 
 | Command | Description |
 |:--------|:------------|
-| `/dream` | Extract entities and relations from current session |
-| `/dream-full` | Full consolidation: replay → integrate → prune → abstract |
-| `/dream-status` | Show vault statistics and pending sessions |
-| `/dream-query <question>` | Search knowledge graph (keyword + graph traversal) |
-| `/dream-on` | Enable auto-capture on session end |
-| `/dream-off` | Disable auto-capture |
+| `/engram` | Extract entities and relations from current session |
+| `/engram-full` | Full consolidation: replay → integrate → prune → abstract |
+| `/engram-status` | Show vault statistics and pending sessions |
+| `/engram-query <question>` | Search knowledge graph (keyword + graph traversal) |
+| `/engram-on` | Enable auto-capture on session end |
+| `/engram-off` | Disable auto-capture |
 
-### `/dream` vs `/dream-full`
+### `/engram` vs `/engram-full`
 
-| | `/dream` | `/dream-full` |
+| | `/engram` | `/engram-full` |
 |:--|:---------|:--------------|
 | Stages | Replay only | All 4 stages |
 | Speed | Fast (one extraction) | Slower (multi-step) |
 | When | Every session | Daily/weekly cleanup |
 
-## 🌙 Dream Stages
+## 🌙 Consolidation Stages
 
 ```
 ┌──────────┐    ┌───────────┐    ┌─────────┐    ┌──────────┐
@@ -189,13 +189,13 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ## 🛠️ CLI Reference
 
 ```bash
-dream_cli.py replay --vault PATH --stdin       # Process extracted JSON
-dream_cli.py integrate --vault PATH [--stdin]   # Detect or execute merges
-dream_cli.py prune --vault PATH [--stdin]       # Score or execute archival
-dream_cli.py abstract --vault PATH              # Gather data for pattern discovery
-dream_cli.py save-pattern --vault PATH --stdin   # Save discovered patterns
-dream_cli.py status --vault PATH                # Vault statistics
-dream_cli.py query --vault PATH --question "..." # Search graph
+engram_cli.py replay --vault PATH --stdin       # Process extracted JSON
+engram_cli.py integrate --vault PATH [--stdin]   # Detect or execute merges
+engram_cli.py prune --vault PATH [--stdin]       # Score or execute archival
+engram_cli.py abstract --vault PATH              # Gather data for pattern discovery
+engram_cli.py save-pattern --vault PATH --stdin   # Save discovered patterns
+engram_cli.py status --vault PATH                # Vault statistics
+engram_cli.py query --vault PATH --question "..." # Search graph
 ```
 
 ## 📄 License

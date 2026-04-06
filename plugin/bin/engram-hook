@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""OODA Dream hook — fires on CC session Stop.
+"""Engram hook — fires on CC session Stop.
 
-Saves a breadcrumb to the queue for the next /dream replay.
+Saves a breadcrumb to the queue for the next /engram replay.
 Uses only Python stdlib — no external dependencies.
 """
 
