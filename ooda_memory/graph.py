@@ -168,6 +168,80 @@ class MemoryGraph:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
 
+    def detect_communities(self, min_size: int = 2) -> list[dict]:
+        """Detect communities using Louvain algorithm.
+
+        Returns list of community dicts with members and metadata.
+        """
+        if self._graph.number_of_nodes() < 3:
+            return []
+
+        # Louvain needs connected components; work on largest
+        communities_raw = nx.community.louvain_communities(
+            self._graph, weight="weight", seed=42
+        )
+
+        communities = []
+        for i, members in enumerate(sorted(communities_raw, key=len, reverse=True)):
+            if len(members) < min_size:
+                continue
+            # Gather member details
+            member_details = []
+            for name in sorted(members):
+                attrs = dict(self._graph.nodes[name])
+                desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+                member_details.append({
+                    "name": name,
+                    "entity_type": attrs.get("entity_type", "CONCEPT"),
+                    "description": desc,
+                })
+
+            # Internal edges
+            subgraph = self._graph.subgraph(members)
+            internal_edges = []
+            for u, v, data in subgraph.edges(data=True):
+                desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:80]
+                internal_edges.append({
+                    "source": u, "target": v,
+                    "weight": float(data.get("weight", 1)),
+                    "description": desc,
+                })
+
+            communities.append({
+                "id": i,
+                "size": len(members),
+                "members": member_details,
+                "internal_edges": internal_edges,
+                "density": nx.density(subgraph),
+            })
+
+        return communities
+
+    def export_community(self, community_id: int, title: str, summary: str, members: list[str]):
+        """Write a community summary to the vault."""
+        comm_dir = os.path.join(self.vault_dir, "communities")
+        os.makedirs(comm_dir, exist_ok=True)
+
+        lines = [
+            "---",
+            f"community_id: {community_id}",
+            f"members: {json.dumps(sorted(members))}",
+            f"size: {len(members)}",
+            "---", "",
+            f"# {title}", "",
+            summary, "",
+            "## Members", "",
+        ]
+        for name in sorted(members):
+            lines.append(f"- [[{name}]]")
+        lines.append("")
+
+        fname = re.sub(r'[<>:"/\\|?*]', "_", title)[:200] + ".md"
+        path = os.path.join(comm_dir, fname)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return path
+
     def _export_relation_index(self):
         rel_dir = os.path.join(self.vault_dir, "relations")
         os.makedirs(rel_dir, exist_ok=True)

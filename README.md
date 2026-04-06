@@ -52,7 +52,7 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 |:------|:-----|:----|
 | **🔍 Observe** | Capture session conversations | CC session JSONL parser |
 | **🧭 Orient** | Extract entities & relations | CC does entity extraction — no external API |
-| **🎯 Decide** | Consolidate memory | 4-stage: replay → integrate → prune → abstract |
+| **🎯 Decide** | Consolidate memory | 5-stage: replay → integrate → prune → community → abstract |
 | **⚡ Act** | Persist to vault | Obsidian markdown + NetworkX GraphML |
 
 ### Zero External Dependencies
@@ -106,7 +106,8 @@ touch ~/.engram/vault/_meta/hook-enabled
 | Command | Description |
 |:--------|:------------|
 | `/engram` | Extract entities and relations from current session |
-| `/engram-full` | Full consolidation: replay → integrate → prune → abstract |
+| `/engram-full` | Full consolidation: replay → integrate → prune → community → abstract |
+| `/engram-community` | Detect and summarize knowledge clusters (Louvain) |
 | `/engram-status` | Show vault statistics and pending sessions |
 | `/engram-query <question>` | Search knowledge graph (keyword + graph traversal) |
 | `/engram-on` | Enable auto-capture on session end |
@@ -123,17 +124,18 @@ touch ~/.engram/vault/_meta/hook-enabled
 ## 🌙 Consolidation Stages
 
 ```
-┌──────────┐    ┌───────────┐    ┌─────────┐    ┌──────────┐
-│  Replay  │ →  │ Integrate │ →  │  Prune  │ →  │ Abstract │
-│          │    │           │    │         │    │          │
-│ Extract  │    │  Merge    │    │ Decay   │    │ Discover │
-│ entities │    │  dupes    │    │ old     │    │ patterns │
-└──────────┘    └───────────┘    └─────────┘    └──────────┘
+┌──────────┐    ┌───────────┐    ┌─────────┐    ┌───────────┐    ┌──────────┐
+│  Replay  │ →  │ Integrate │ →  │  Prune  │ →  │ Community │ →  │ Abstract │
+│          │    │           │    │         │    │           │    │          │
+│ Extract  │    │  Merge    │    │ Decay   │    │  Cluster  │    │ Discover │
+│ entities │    │  dupes    │    │ old     │    │  & label  │    │ patterns │
+└──────────┘    └───────────┘    └─────────┘    └───────────┘    └──────────┘
 ```
 
 - **Replay** — CC extracts entities/relations from session → writes to graph + daily note
 - **Integrate** — Detects duplicate entities (token similarity) → CC decides merge
 - **Prune** — Scores entities by decay (30-day half-life) → archives stale ones
+- **Community** — Louvain clustering on the graph → CC titles and summarizes each cluster
 - **Abstract** — Analyzes daily notes → discovers behavioral patterns (e.g., "user always debugs by observe → hypothesize → verify")
 
 ## 🗂️ Vault Structure
@@ -189,9 +191,10 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ## 🛠️ CLI Reference
 
 ```bash
-engram_cli.py replay --vault PATH --stdin       # Process extracted JSON
+engram_cli.py replay --vault PATH --stdin        # Process extracted JSON
 engram_cli.py integrate --vault PATH [--stdin]   # Detect or execute merges
 engram_cli.py prune --vault PATH [--stdin]       # Score or execute archival
+engram_cli.py community --vault PATH [--stdin]   # Detect or save community summaries
 engram_cli.py abstract --vault PATH              # Gather data for pattern discovery
 engram_cli.py save-pattern --vault PATH --stdin   # Save discovered patterns
 engram_cli.py status --vault PATH                # Vault statistics

@@ -287,6 +287,40 @@ def cmd_prune(args):
     }))
 
 
+# ── community ──────────────────────────────────────────
+
+def cmd_community(args):
+    """Detect communities, or save CC-generated summaries from stdin."""
+    graph = MemoryGraph(args.vault)
+
+    if args.stdin:
+        # Save community summaries: {"communities": [{"id": 0, "title": "...", "summary": "...", "members": ["A", "B"]}]}
+        data = json.load(sys.stdin)
+        saved = []
+        for c in data.get("communities", []):
+            path = graph.export_community(
+                community_id=c["id"],
+                title=c["title"],
+                summary=c["summary"],
+                members=c["members"],
+            )
+            saved.append({"title": c["title"], "path": path})
+        _git_sync(args.vault, f"engram community: {len(saved)} communities")
+        print(json.dumps({"status": "ok", "saved": saved}))
+        return
+
+    # Detection mode
+    communities = graph.detect_communities(min_size=2)
+    print(json.dumps({
+        "status": "ok",
+        "total_nodes": graph.node_count,
+        "total_edges": graph.edge_count,
+        "communities_found": len(communities),
+        "communities": communities,
+        "message": "Review communities. For each, generate a title and summary. Then pipe: {\"communities\": [{\"id\": 0, \"title\": \"...\", \"summary\": \"...\", \"members\": [\"A\", \"B\"]}]} | engram_cli.py community --vault PATH --stdin",
+    }, indent=2))
+
+
 # ── query (enhanced with graph traversal) ───────────────
 
 def cmd_query(args):
@@ -454,14 +488,15 @@ def cmd_status(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Engram CLI")
-    parser.add_argument("command", choices=["replay", "integrate", "prune", "abstract", "save-pattern", "status", "query"])
+    parser.add_argument("command", choices=["replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query"])
     parser.add_argument("--vault", default=DEFAULT_VAULT)
     parser.add_argument("--stdin", action="store_true")
     parser.add_argument("--question", default="")
     args = parser.parse_args()
 
     {"replay": cmd_replay, "integrate": cmd_integrate, "prune": cmd_prune,
-     "abstract": cmd_abstract, "save-pattern": cmd_save_pattern,
+     "community": cmd_community, "abstract": cmd_abstract,
+     "save-pattern": cmd_save_pattern,
      "status": cmd_status, "query": cmd_query}[args.command](args)
 
 

@@ -1,6 +1,6 @@
 # Engram Full — Complete memory consolidation
 
-Run all four engram stages: replay, integrate, prune, abstract.
+Run all five engram stages: replay, integrate, prune, community, abstract.
 
 ## Steps
 
@@ -18,7 +18,17 @@ python3 /workplace/qianheng/ooda-memory/engram_cli.py prune --vault ~/.engram/va
 ```
 Review fading/archivable entities.
 
-**4. Abstract** — Discover behavioral patterns:
+**4. Community** — Detect and summarize knowledge clusters:
+```bash
+python3 /workplace/qianheng/ooda-memory/engram_cli.py community --vault ~/.engram/vault
+```
+For each community, generate a title and summary. Then save:
+```bash
+echo '<json>' | python3 /workplace/qianheng/ooda-memory/engram_cli.py community --vault ~/.engram/vault --stdin
+```
+Community JSON: `{"communities": [{"id": 0, "title": "...", "summary": "...", "members": ["A", "B"]}]}`
+
+**5. Abstract** — Discover behavioral patterns:
 ```bash
 python3 /workplace/qianheng/ooda-memory/engram_cli.py abstract --vault ~/.engram/vault
 ```
