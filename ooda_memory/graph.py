@@ -1,0 +1,154 @@
+"""Graph manager — NetworkX graph + Obsidian markdown export.
+
+Standalone graph operations without nano-graphrag runtime dependency.
+Reuses ObsidianGraphStorage format for Obsidian compatibility.
+"""
+
+import json
+import os
+import re
+
+import networkx as nx
+
+
+GRAPH_FIELD_SEP = "<SEP>"
+
+
+class MemoryGraph:
+    """In-memory knowledge graph with Obsidian vault persistence."""
+
+    def __init__(self, vault_dir: str):
+        self.vault_dir = vault_dir
+        self.meta_dir = os.path.join(vault_dir, "_meta")
+        self.graph_path = os.path.join(self.meta_dir, "graph.graphml")
+        os.makedirs(self.meta_dir, exist_ok=True)
+
+        # Load or create graph
+        if os.path.exists(self.graph_path):
+            self._graph = nx.read_graphml(self.graph_path)
+        else:
+            self._graph = nx.Graph()
+
+    @property
+    def node_count(self) -> int:
+        return self._graph.number_of_nodes()
+
+    @property
+    def edge_count(self) -> int:
+        return self._graph.number_of_edges()
+
+    def all_entity_names(self) -> list[str]:
+        return list(self._graph.nodes())
+
+    def get_entity(self, name: str) -> dict | None:
+        if name in self._graph:
+            return dict(self._graph.nodes[name])
+        return None
+
+    def get_neighbors(self, name: str) -> list[tuple[str, dict]]:
+        """Return [(neighbor_name, edge_attrs), ...]"""
+        if name not in self._graph:
+            return []
+        return [(n, dict(self._graph.edges[name, n])) for n in self._graph.neighbors(name)]
+
+    def upsert_entity(self, name: str, attrs: dict):
+        """Add or update an entity node."""
+        name = name.upper().strip()
+        if name in self._graph:
+            existing = self._graph.nodes[name]
+            # Merge descriptions
+            old_desc = existing.get("description", "")
+            new_desc = attrs.get("description", "")
+            if new_desc and new_desc not in old_desc:
+                attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
+            existing.update(attrs)
+        else:
+            self._graph.add_node(name, **attrs)
+
+    def upsert_relation(self, source: str, target: str, attrs: dict):
+        """Add or update a relation edge."""
+        source, target = source.upper().strip(), target.upper().strip()
+        key = tuple(sorted([source, target]))
+        if self._graph.has_edge(*key):
+            existing = self._graph.edges[key]
+            old_w = float(existing.get("weight", 1))
+            new_w = float(attrs.get("weight", 1))
+            attrs["weight"] = old_w + new_w
+            old_desc = existing.get("description", "")
+            new_desc = attrs.get("description", "")
+            if new_desc and new_desc not in old_desc:
+                attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
+            existing.update(attrs)
+        else:
+            self._graph.add_edge(source, target, **attrs)
+
+    def save(self):
+        """Persist graph to GraphML + export Obsidian markdown."""
+        nx.write_graphml(self._graph, self.graph_path)
+        self._export_entities()
+        self._export_relation_index()
+
+    # --- Obsidian export ---
+
+    TYPE_FOLDER = {
+        "PERSON": "people", "CONCEPT": "concepts", "PROJECT": "projects",
+        "TOOL": "tools", "ORGANIZATION": "orgs", "ORG": "orgs",
+        "EVENT": "concepts", "LOCATION": "concepts",
+    }
+
+    def _safe_filename(self, name: str) -> str:
+        return re.sub(r'[<>:"/\\|?*]', "_", name)[:200] + ".md"
+
+    def _export_entities(self):
+        entities_dir = os.path.join(self.vault_dir, "entities")
+        for node_id in self._graph.nodes():
+            attrs = self._graph.nodes[node_id]
+            entity_type = attrs.get("entity_type", "CONCEPT")
+            folder = self.TYPE_FOLDER.get(entity_type.upper(), "concepts")
+            dirpath = os.path.join(entities_dir, folder)
+            os.makedirs(dirpath, exist_ok=True)
+
+            description = attrs.get("description", "")
+            first_desc = description.split(GRAPH_FIELD_SEP)[0] if description else ""
+
+            relations = []
+            for neighbor in self._graph.neighbors(node_id):
+                edge = self._graph.edges[node_id, neighbor]
+                desc = (edge.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:100]
+                weight = float(edge.get("weight", 1))
+                relations.append((neighbor, desc, weight))
+
+            lines = [
+                "---",
+                f"entity_type: {entity_type}",
+                f"source_id: {attrs.get('source_id', '')}",
+                "---", "",
+                f"# {node_id}", "",
+                first_desc, "",
+            ]
+            if relations:
+                lines += ["## Relations", ""]
+                for n, d, w in sorted(relations, key=lambda x: -x[2]):
+                    lines.append(f"- [[{n}]] — {d} (weight: {w:.1f})")
+                lines.append("")
+
+            path = os.path.join(dirpath, self._safe_filename(node_id))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+
+    def _export_relation_index(self):
+        rel_dir = os.path.join(self.vault_dir, "relations")
+        os.makedirs(rel_dir, exist_ok=True)
+        lines = [
+            "---", f"total_relations: {self.edge_count}", "---", "",
+            "# Relation Index", "",
+            "| Source | Target | Weight | Description |",
+            "|--------|--------|--------|-------------|",
+        ]
+        for u, v, data in sorted(self._graph.edges(data=True), key=lambda x: -float(x[2].get("weight", 0))):
+            desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:80]
+            weight = float(data.get("weight", 1))
+            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {desc} |")
+
+        with open(os.path.join(rel_dir, "_index.md"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
