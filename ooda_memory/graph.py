@@ -5,6 +5,7 @@ Reuses ObsidianGraphStorage format for Obsidian compatibility.
 """
 
 import json
+import fcntl
 import os
 import re
 
@@ -94,10 +95,30 @@ class MemoryGraph:
             self._graph.add_edge(source, target, **attrs)
 
     def save(self):
-        """Persist graph to GraphML + export Obsidian markdown."""
-        nx.write_graphml(self._graph, self.graph_path)
-        self._export_entities()
-        self._export_relation_index()
+        """Persist graph to GraphML + export Obsidian markdown.
+
+        Uses file lock to prevent concurrent writes from corrupting the graph.
+        Re-reads graph before merging to pick up changes from other sessions.
+        """
+        lock_path = os.path.join(self.meta_dir, "graph.lock")
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            try:
+                # Re-read disk graph and merge our changes on top
+                if os.path.exists(self.graph_path):
+                    disk_graph = nx.read_graphml(self.graph_path)
+                    # Merge: disk is base, our in-memory changes win
+                    for node, attrs in self._graph.nodes(data=True):
+                        disk_graph.add_node(node, **attrs)
+                    for u, v, attrs in self._graph.edges(data=True):
+                        disk_graph.add_edge(u, v, **attrs)
+                    self._graph = disk_graph
+
+                nx.write_graphml(self._graph, self.graph_path)
+                self._export_entities()
+                self._export_relation_index()
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     # --- Obsidian export ---
 
