@@ -169,20 +169,26 @@ class MemoryGraph:
             alias = node_id.replace("_", " ").title()
             aliases = [alias] if alias != node_id else []
 
+            confidence = attrs.get("confidence", "EXTRACTED")
+
             lines = [
                 "---",
                 f"entity_type: {entity_type}",
+                f"confidence: {confidence}",
                 f"tags:",
             ]
             for t in tags:
                 lines.append(f"  - {t}")
+            lines.append(f"  - confidence/{confidence.lower()}")
             if aliases:
                 lines.append(f"aliases:")
                 for a in aliases:
                     lines.append(f"  - \"{a}\"")
+            created = attrs.get('source_id', '').replace('session-', '') or ''
+            last_updated = attrs.get('last_updated', '')
             lines += [
-                f"created: {attrs.get('source_id', '').replace('session-', '') or ''}",
-                f"last_updated: {attrs.get('last_updated', '')}",
+                f"created: \"[[daily/{created}|{created}]]\"" if created else "created:",
+                f"last_updated: \"[[daily/{last_updated}|{last_updated}]]\"" if last_updated else "last_updated:",
                 f"degree: {degree}",
                 f"cssclasses:",
                 f"  - entity",
@@ -253,6 +259,43 @@ class MemoryGraph:
 
         return communities
 
+    def find_surprising_connections(self, communities: list[dict], top_n: int = 10) -> list[dict]:
+        """Find cross-community edges ranked by surprise score.
+
+        Surprise = edge weight × (1 / min(community_size_a, community_size_b)).
+        High-weight edges between small, distinct communities are most surprising.
+        """
+        # Build node → community_id mapping
+        node_community = {}
+        community_sizes = {}
+        for c in communities:
+            cid = c["id"]
+            members = [m["name"] if isinstance(m, dict) else m for m in c["members"]]
+            community_sizes[cid] = len(members)
+            for m in members:
+                node_community[m] = cid
+
+        cross_edges = []
+        for u, v, data in self._graph.edges(data=True):
+            cu = node_community.get(u)
+            cv = node_community.get(v)
+            if cu is None or cv is None or cu == cv:
+                continue
+            weight = float(data.get("weight", 1))
+            min_size = min(community_sizes.get(cu, 1), community_sizes.get(cv, 1))
+            surprise = weight / min_size
+            desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+            cross_edges.append({
+                "source": u, "target": v,
+                "source_community": cu, "target_community": cv,
+                "weight": weight,
+                "surprise_score": round(surprise, 3),
+                "description": desc,
+            })
+
+        cross_edges.sort(key=lambda x: -x["surprise_score"])
+        return cross_edges[:top_n]
+
     def export_community(self, community_id: int, title: str, summary: str, members: list[str]):
         """Write a community summary to the vault."""
         from datetime import datetime as _dt
@@ -291,6 +334,35 @@ class MemoryGraph:
             f.write("\n".join(lines) + "\n")
         return path
 
+    def god_nodes(self, top_n: int = 10) -> list[dict]:
+        """Identify the most important entities by degree + PageRank."""
+        G = self._graph
+        if G.number_of_nodes() == 0:
+            return []
+
+        pagerank = nx.pagerank(G, weight="weight") if G.number_of_nodes() > 1 else {n: 1.0 for n in G.nodes()}
+        max_pr = max(pagerank.values()) or 1.0
+
+        results = []
+        for name in G.nodes():
+            attrs = dict(G.nodes[name])
+            degree = G.degree(name)
+            pr = pagerank.get(name, 0)
+            # Composite score: 50% degree-based + 50% PageRank-based
+            score = 0.5 * (degree / max(G.degree(n) for n in G.nodes()) if G.number_of_nodes() > 0 else 0) + 0.5 * (pr / max_pr)
+            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+            results.append({
+                "name": name,
+                "entity_type": attrs.get("entity_type", "CONCEPT"),
+                "degree": degree,
+                "pagerank": round(pr, 4),
+                "score": round(score, 3),
+                "description": desc,
+            })
+
+        results.sort(key=lambda x: -x["score"])
+        return results[:top_n]
+
     def _export_relation_index(self):
         rel_dir = os.path.join(self.vault_dir, "relations")
         os.makedirs(rel_dir, exist_ok=True)
@@ -302,15 +374,16 @@ class MemoryGraph:
             f"total_entities: {self.node_count}",
             "---", "",
             "# Relation Index", "",
-            "| Source | Target | Weight | First Seen | Last Seen | Description |",
-            "|--------|--------|--------|------------|-----------|-------------|",
+            "| Source | Target | Weight | Confidence | First Seen | Last Seen | Description |",
+            "|--------|--------|--------|------------|------------|-----------|-------------|",
         ]
         for u, v, data in sorted(self._graph.edges(data=True), key=lambda x: -float(x[2].get("weight", 0))):
             desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
             weight = float(data.get("weight", 1))
+            confidence = data.get("confidence", "EXTRACTED")
             first_seen = data.get("first_seen", "")
             last_seen = data.get("last_seen", "")
-            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {first_seen} | {last_seen} | {desc} |")
+            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {confidence} | {first_seen} | {last_seen} | {desc} |")
 
         with open(os.path.join(rel_dir, "_index.md"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

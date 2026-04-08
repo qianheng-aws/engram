@@ -32,18 +32,24 @@ engram status```
 ### Weight scale
 - 0.1-0.3: weak mention | 0.4-0.6: moderate | 0.7-0.9: core dependency | 1.0: identity
 
+### Confidence tagging
+Every entity and relation MUST include a `confidence` field:
+- `EXTRACTED` — explicitly discussed, debugged, or decided in this session
+- `INFERRED` — mentioned in passing, referenced indirectly, or deduced from context
+- `AMBIGUOUS` — unclear whether relevant, mentioned tangentially
+
 **3. Pipe extracted JSON:**
 
 ```bash
-echo '<json>' | engram replay --vault ~/.engram/vault --stdin
+echo '<json>' | engram replay --stdin
 ```
 
 JSON format:
 ```json
 {
   "date": "YYYY-MM-DD",
-  "entities": [{"name": "NAME", "entity_type": "PROJECT|TOOL|CONCEPT|PERSON|ORGANIZATION", "description": "..."}],
-  "relations": [{"source": "A", "target": "B", "description": "...", "weight": 0.8}],
+  "entities": [{"name": "NAME", "entity_type": "PROJECT|TOOL|CONCEPT|PERSON|ORGANIZATION", "description": "...", "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"}],
+  "relations": [{"source": "A", "target": "B", "description": "...", "weight": 0.8, "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"}],
   "daily_summary": "One paragraph summary"
 }
 ```

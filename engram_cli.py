@@ -174,6 +174,7 @@ def cmd_replay(args):
         graph.upsert_entity(e["name"], {
             "entity_type": e.get("entity_type", "CONCEPT"),
             "description": e.get("description", ""),
+            "confidence": e.get("confidence", "EXTRACTED"),
             "source_id": f"session-{date}",
             "last_updated": date,
         })
@@ -182,6 +183,7 @@ def cmd_replay(args):
         graph.upsert_relation(r["source"], r["target"], {
             "description": r.get("description", ""),
             "weight": r.get("weight", 1.0),
+            "confidence": r.get("confidence", "EXTRACTED"),
         })
 
     graph.save()
@@ -501,13 +503,15 @@ def cmd_community(args):
 
     # Detection mode
     communities = graph.detect_communities(min_size=2)
+    surprising = graph.find_surprising_connections(communities)
     print(json.dumps({
         "status": "ok",
         "total_nodes": graph.node_count,
         "total_edges": graph.edge_count,
         "communities_found": len(communities),
         "communities": communities,
-        "message": "Review communities. For each, generate a title and summary. Then pipe: {\"communities\": [{\"id\": 0, \"title\": \"...\", \"summary\": \"...\", \"members\": [\"A\", \"B\"]}]} | engram community --vault PATH --stdin",
+        "surprising_connections": surprising,
+        "message": "Review communities. For each, generate a title and summary. Then pipe: {\"communities\": [{\"id\": 0, \"title\": \"...\", \"summary\": \"...\", \"members\": [\"A\", \"B\"]}]} | engram community --stdin",
     }, indent=2))
 
 
@@ -536,13 +540,22 @@ def cmd_query(args):
             if len(matched) >= 10:
                 break
 
-    # 3. Multi-hop: expand to neighbors of matched entities
+    # 3. If no keyword matches, try god nodes as entry points
+    if not matched:
+        god = graph.god_nodes(top_n=5)
+        for g in god:
+            attrs = graph.get_entity(g["name"])
+            desc = (attrs.get("description", "") or "").lower()
+            if any(tok.lower() in desc for tok in tokens):
+                matched.append(g["name"])
+
+    # 4. Multi-hop: expand to neighbors of matched entities
     expanded = set(matched)
     for name in matched[:5]:
         for neighbor, _ in graph.get_neighbors(name):
             expanded.add(neighbor)
 
-    # 4. Build rich context
+    # 5. Build rich context
     context_parts = []
     for name in matched[:10]:
         attrs = graph.get_entity(name)
@@ -555,7 +568,7 @@ def cmd_query(args):
             neighbor_strs.append(f"  - [[{n}]]: {ndesc} (w:{weight})")
         context_parts.append(f"## {name}\n{desc}\n### Relations\n" + "\n".join(neighbor_strs))
 
-    # 5. Load community context for matched entities
+    # 6. Load community context for matched entities
     community_context = []
     comm_dir = os.path.join(args.vault, "communities")
     if os.path.isdir(comm_dir):
@@ -817,18 +830,22 @@ def cmd_status(args):
     # Entity list for dedup awareness
     entities = sorted(graph.all_entity_names())
 
-    # Hub entities (top 5 by degree)
+    # God nodes (degree + PageRank)
+    god_nodes = graph.god_nodes(top_n=10)
+
     G = graph._graph
-    hubs = sorted(
-        [(n, G.degree(n)) for n in G.nodes()],
-        key=lambda x: -x[1],
-    )[:5]
 
     # Type distribution
     type_dist = defaultdict(int)
     for n in G.nodes():
         etype = G.nodes[n].get("entity_type", "UNKNOWN")
         type_dist[etype] += 1
+
+    # Confidence distribution
+    conf_dist = defaultdict(int)
+    for n in G.nodes():
+        conf = G.nodes[n].get("confidence", "EXTRACTED")
+        conf_dist[conf] += 1
 
     # Graph density
     import networkx
@@ -839,7 +856,8 @@ def cmd_status(args):
         "edges": graph.edge_count,
         "density": round(density, 4),
         "type_distribution": dict(type_dist),
-        "hub_entities": [{"name": n, "degree": d} for n, d in hubs],
+        "confidence_distribution": dict(conf_dist),
+        "god_nodes": god_nodes,
         "daily_notes": count_md("daily"),
         "patterns": count_md("patterns"),
         "communities": count_md("communities"),

@@ -1,6 +1,18 @@
 {
     "description": "Engram — persistent memory via knowledge graph",
     "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "Grep|Glob|Read",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-pretool",
+                        "timeout": 3000
+                    }
+                ]
+            }
+        ],
         "Stop": [
             {
                 "matcher": "",

@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Engram PreToolUse hook — fires before Grep/Glob/Read.
+
+If a knowledge graph exists, outputs a reminder to check the graph first.
+Uses only Python stdlib — no external dependencies.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+CONFIG_PATH = Path.home() / ".engram" / "config.json"
+FALLBACK_VAULT = Path.home() / ".engram" / "vault"
+
+
+def get_vault():
+    try:
+        with open(CONFIG_PATH) as f:
+            return Path(json.load(f).get("vault", str(FALLBACK_VAULT)))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return FALLBACK_VAULT
+
+
+def main():
+    vault = get_vault()
+    graph_path = vault / "_meta" / "graph.graphml"
+
+    if not graph_path.exists():
+        return
+
+    # Read hook payload from stdin
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        return
+
+    tool_name = payload.get("tool_name", "")
+    if tool_name not in ("Grep", "Glob", "Read"):
+        return
+
+    # Count graph nodes for context
+    node_count = 0
+    try:
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(graph_path)
+        node_count = len(tree.findall(".//{http://graphml.graphdml.org/xmlns}node"))
+    except Exception:
+        pass
+
+    # Output reminder as hook message
+    print(json.dumps({
+        "message": f"engram: Knowledge graph has {node_count} entities. "
+                   f"Consider `engram query --question \"...\"` before raw search.",
+    }))
+
+
+if __name__ == "__main__":
+    main()
