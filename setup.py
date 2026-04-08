@@ -7,6 +7,7 @@ setup(
     author="qianheng",
     license="MIT",
     packages=find_packages(),
+    py_modules=["engram_cli"],
     python_requires=">=3.10",
     install_requires=["networkx"],
     entry_points={"console_scripts": ["engram=engram_cli:main"]},
