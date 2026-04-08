@@ -314,7 +314,7 @@ class MemoryGraph:
             f"members: {json.dumps(sorted(members))}",
             f"size: {len(members)}",
             f"density: {density:.3f}",
-            f"created: {_dt.now().strftime('%Y-%m-%d')}",
+            f"created: \"[[daily/{_dt.now().strftime('%Y-%m-%d')}|{_dt.now().strftime('%Y-%m-%d')}]]\"",
             f"cssclasses:",
             f"  - community",
             "---", "",
@@ -383,7 +383,9 @@ class MemoryGraph:
             confidence = data.get("confidence", "EXTRACTED")
             first_seen = data.get("first_seen", "")
             last_seen = data.get("last_seen", "")
-            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {confidence} | {first_seen} | {last_seen} | {desc} |")
+            fs_link = f"[[daily/{first_seen}|{first_seen}]]" if first_seen else ""
+            ls_link = f"[[daily/{last_seen}|{last_seen}]]" if last_seen else ""
+            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {confidence} | {fs_link} | {ls_link} | {desc} |")
 
         with open(os.path.join(rel_dir, "_index.md"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

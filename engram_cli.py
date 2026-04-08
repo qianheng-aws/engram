@@ -224,7 +224,7 @@ def cmd_replay(args):
 
     lines = [
         "---",
-        f"date: {date}",
+        f"date: \"{date}\"",
         f"tags:",
         f"  - daily",
     ]
@@ -679,7 +679,7 @@ def cmd_save_pattern(args):
             f"name: \"{name}\"",
             f"confidence: {confidence}",
             f"evidence_count: {len(evidence)}",
-            f"last_updated: {datetime.now().strftime('%Y-%m-%d')}",
+            f"last_updated: \"[[daily/{datetime.now().strftime('%Y-%m-%d')}|{datetime.now().strftime('%Y-%m-%d')}]]\"",
             f"cssclasses:",
             f"  - pattern",
             "---", "",
@@ -688,7 +688,7 @@ def cmd_save_pattern(args):
             "## Evidence", "",
         ]
         for e in evidence:
-            lines.append(f"- [[{e}]]")
+            lines.append(f"- [[daily/{e}|{e}]]")
         lines.append("")
 
         with open(os.path.join(pattern_dir, fname), "w", encoding="utf-8") as f:
