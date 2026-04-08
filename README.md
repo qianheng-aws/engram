@@ -72,9 +72,10 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 ### Setup
 
 ```bash
-# 1. Clone
+# 1. Clone and install
 git clone https://github.com/qianheng-aws/engram.git
 cd engram
+pip install -e .
 
 # 2. Initialize vault
 mkdir -p ~/.engram/vault/{entities/{people,concepts,projects,tools,orgs},relations,communities,daily,dreams,patterns,preferences,_meta}
