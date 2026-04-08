@@ -72,21 +72,19 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 ### Setup
 
 ```bash
-# 1. Clone
+# 1. Clone and install
 git clone https://github.com/qianheng-aws/engram.git
 cd engram
+pip install -e .
 
-# 2. Install dependency
-pip install networkx
-
-# 3. Initialize vault
+# 2. Initialize vault
 mkdir -p ~/.engram/vault/{entities/{people,concepts,projects,tools,orgs},relations,communities,daily,dreams,patterns,preferences,_meta}
 
-# 4. Register as CC plugin
+# 3. Register as CC plugin
 claude plugin marketplace add .
 claude plugin install engram
 
-# 5. (Optional) Enable auto-capture on session end
+# 4. (Optional) Enable auto-capture on session end
 touch ~/.engram/vault/_meta/hook-enabled
 ```
 
