@@ -7,7 +7,7 @@ Extract entities and relations from the current session conversation and persist
 **1. Check existing entities:**
 
 ```bash
-python3 /workplace/qianheng/ooda-memory/engram_cli.py status --vault ~/.engram/vault
+python3 "${CLAUDE_PLUGIN_ROOT}/../engram_cli.py" status --vault ~/.engram/vault
 ```
 
 **2. Analyze this conversation** and extract entities + relations following these rules:
@@ -36,7 +36,7 @@ python3 /workplace/qianheng/ooda-memory/engram_cli.py status --vault ~/.engram/v
 **3. Pipe extracted JSON:**
 
 ```bash
-echo '<json>' | python3 /workplace/qianheng/ooda-memory/engram_cli.py replay --vault ~/.engram/vault --stdin
+echo '<json>' | python3 "${CLAUDE_PLUGIN_ROOT}/../engram_cli.py" replay --vault ~/.engram/vault --stdin
 ```
 
 JSON format:

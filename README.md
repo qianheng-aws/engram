@@ -80,23 +80,9 @@ cd engram
 mkdir -p ~/.engram/vault/{entities/{people,concepts,projects,tools,orgs},relations,communities,daily,dreams,patterns,preferences,_meta}
 
 # 3. Register as CC plugin
-# Add to ~/.claude/settings.json:
-```
+claude plugin marketplace add ./plugin
+claude plugin install engram
 
-```jsonc
-{
-  "extraKnownMarketplaces": {
-    "engram": {
-      "source": { "source": "directory", "path": "/path/to/engram" }
-    }
-  },
-  "enabledPlugins": {
-    "engram@engram": true
-  }
-}
-```
-
-```bash
 # 4. (Optional) Enable auto-capture on session end
 touch ~/.engram/vault/_meta/hook-enabled
 ```

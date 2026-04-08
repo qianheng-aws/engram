@@ -73,7 +73,9 @@ class MemoryGraph:
 
     def upsert_relation(self, source: str, target: str, attrs: dict):
         """Add or update a relation edge."""
+        from datetime import datetime as _dt
         source, target = source.upper().strip(), target.upper().strip()
+        now = _dt.now().strftime("%Y-%m-%d")
         if self._graph.has_edge(source, target):
             existing = self._graph.edges[source, target]
             # Weight: use max instead of sum to prevent unbounded growth
@@ -89,8 +91,13 @@ class MemoryGraph:
                     attrs["description"] = f"{parts[0]}{GRAPH_FIELD_SEP}{new_desc}"
                 else:
                     attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
+            # Temporal: preserve first_seen, update last_seen
+            attrs["last_seen"] = now
+            attrs.setdefault("first_seen", existing.get("first_seen", now))
             existing.update(attrs)
         else:
+            attrs["first_seen"] = now
+            attrs["last_seen"] = now
             self._graph.add_edge(source, target, **attrs)
 
     def save(self):
@@ -141,26 +148,56 @@ class MemoryGraph:
 
             description = attrs.get("description", "")
             first_desc = description.split(GRAPH_FIELD_SEP)[0] if description else ""
+            degree = self._graph.degree(node_id)
 
             relations = []
+            neighbor_types = set()
             for neighbor in self._graph.neighbors(node_id):
                 edge = self._graph.edges[node_id, neighbor]
-                desc = (edge.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:100]
+                desc = (edge.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
                 weight = float(edge.get("weight", 1))
                 relations.append((neighbor, desc, weight))
+                n_type = self._graph.nodes[neighbor].get("entity_type", "")
+                if n_type:
+                    neighbor_types.add(n_type.lower())
+
+            # Build tags: type hierarchy + neighbor type connections
+            type_lower = entity_type.lower()
+            tags = [f"entity/{type_lower}"]
+
+            # Build aliases from underscore-separated name
+            alias = node_id.replace("_", " ").title()
+            aliases = [alias] if alias != node_id else []
 
             lines = [
                 "---",
                 f"entity_type: {entity_type}",
-                f"source_id: {attrs.get('source_id', '')}",
+                f"tags:",
+            ]
+            for t in tags:
+                lines.append(f"  - {t}")
+            if aliases:
+                lines.append(f"aliases:")
+                for a in aliases:
+                    lines.append(f"  - \"{a}\"")
+            lines += [
+                f"created: {attrs.get('source_id', '').replace('session-', '') or ''}",
+                f"last_updated: {attrs.get('last_updated', '')}",
+                f"degree: {degree}",
+                f"cssclasses:",
+                f"  - entity",
+                f"  - {type_lower}",
                 "---", "",
                 f"# {node_id}", "",
                 first_desc, "",
             ]
+
             if relations:
                 lines += ["## Relations", ""]
                 for n, d, w in sorted(relations, key=lambda x: -x[2]):
-                    lines.append(f"- [[{n}]] — {d} (weight: {w:.1f})")
+                    n_type = self._graph.nodes[n].get("entity_type", "")
+                    type_badge = f"`{n_type}`" if n_type else ""
+                    lines.append(f"- [[{n}]] {type_badge} — {d} (weight: {w:.1f})")
                 lines.append("")
 
             path = os.path.join(dirpath, self._safe_filename(node_id))
@@ -218,21 +255,34 @@ class MemoryGraph:
 
     def export_community(self, community_id: int, title: str, summary: str, members: list[str]):
         """Write a community summary to the vault."""
+        from datetime import datetime as _dt
         comm_dir = os.path.join(self.vault_dir, "communities")
         os.makedirs(comm_dir, exist_ok=True)
+
+        # Calculate density for this community's subgraph
+        subgraph = self._graph.subgraph(members)
+        density = nx.density(subgraph) if len(members) > 1 else 0.0
 
         lines = [
             "---",
             f"community_id: {community_id}",
+            f"tags:",
+            f"  - community",
             f"members: {json.dumps(sorted(members))}",
             f"size: {len(members)}",
+            f"density: {density:.3f}",
+            f"created: {_dt.now().strftime('%Y-%m-%d')}",
+            f"cssclasses:",
+            f"  - community",
             "---", "",
             f"# {title}", "",
             summary, "",
             "## Members", "",
         ]
         for name in sorted(members):
-            lines.append(f"- [[{name}]]")
+            entity_type = self._graph.nodes[name].get("entity_type", "") if name in self._graph else ""
+            type_badge = f" `{entity_type}`" if entity_type else ""
+            lines.append(f"- [[{name}]]{type_badge}")
         lines.append("")
 
         fname = re.sub(r'[<>:"/\\|?*]', "_", title)[:200] + ".md"
@@ -245,15 +295,22 @@ class MemoryGraph:
         rel_dir = os.path.join(self.vault_dir, "relations")
         os.makedirs(rel_dir, exist_ok=True)
         lines = [
-            "---", f"total_relations: {self.edge_count}", "---", "",
+            "---",
+            f"tags:",
+            f"  - index",
+            f"total_relations: {self.edge_count}",
+            f"total_entities: {self.node_count}",
+            "---", "",
             "# Relation Index", "",
-            "| Source | Target | Weight | Description |",
-            "|--------|--------|--------|-------------|",
+            "| Source | Target | Weight | First Seen | Last Seen | Description |",
+            "|--------|--------|--------|------------|-----------|-------------|",
         ]
         for u, v, data in sorted(self._graph.edges(data=True), key=lambda x: -float(x[2].get("weight", 0))):
-            desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:80]
+            desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
             weight = float(data.get("weight", 1))
-            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {desc} |")
+            first_seen = data.get("first_seen", "")
+            last_seen = data.get("last_seen", "")
+            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {first_seen} | {last_seen} | {desc} |")
 
         with open(os.path.join(rel_dir, "_index.md"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -44,10 +45,69 @@ def _git_sync(vault: str, message: str = "auto-sync"):
 
 # ── replay ──────────────────────────────────────────────
 
+def _check_dedup(vault: str, data: dict, window_minutes: int = 15) -> bool:
+    """Check if this replay payload was already processed recently.
+
+    Returns True if duplicate (should skip), False if new.
+    Uses content hash + rolling time window to prevent accidental double-saves.
+    """
+    dedup_dir = os.path.join(vault, "_meta", "dedup")
+    os.makedirs(dedup_dir, exist_ok=True)
+
+    # Hash the meaningful content (entities + relations + summary)
+    content = json.dumps({
+        "entities": sorted([e["name"] for e in data.get("entities", [])]),
+        "relations": sorted(
+            [f"{r['source']}->{r['target']}" for r in data.get("relations", [])]
+        ),
+        "summary": data.get("daily_summary", ""),
+    }, sort_keys=True)
+    content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    hash_file = os.path.join(dedup_dir, f"{content_hash}.json")
+
+    if os.path.exists(hash_file):
+        try:
+            with open(hash_file) as f:
+                prev = json.load(f)
+            prev_time = datetime.fromisoformat(prev["timestamp"])
+            if (datetime.now() - prev_time).total_seconds() < window_minutes * 60:
+                return True
+        except Exception:
+            pass
+
+    # Write new hash
+    with open(hash_file, "w") as f:
+        json.dump({"timestamp": datetime.now().isoformat(), "hash": content_hash}, f)
+
+    # Clean old hash files (> 1 hour)
+    for fname in os.listdir(dedup_dir):
+        fpath = os.path.join(dedup_dir, fname)
+        try:
+            with open(fpath) as f:
+                entry = json.load(f)
+            entry_time = datetime.fromisoformat(entry["timestamp"])
+            if (datetime.now() - entry_time).total_seconds() > 3600:
+                os.remove(fpath)
+        except Exception:
+            pass
+
+    return False
+
+
 def cmd_replay(args):
     """Process CC-extracted entities/relations JSON from stdin."""
     data = json.load(sys.stdin)
     vault = args.vault
+
+    # Dedup check: skip if same content was saved within 15 minutes
+    if _check_dedup(vault, data):
+        print(json.dumps({
+            "status": "skipped",
+            "reason": "duplicate replay detected within 15-minute window",
+        }))
+        return
+
     graph = MemoryGraph(vault)
 
     entities = data.get("entities", [])
@@ -98,16 +158,56 @@ def cmd_replay(args):
 
     entity_names = [e["name"] for e in entities]
     all_entities = existing_entities | set(entity_names)
+    session_count = len(existing_sessions) + 1
+
+    # Collect entity types for tags
+    entity_types = set()
+    for e in entities:
+        entity_types.add(e.get("entity_type", "CONCEPT").lower())
 
     lines = [
         "---",
         f"date: {date}",
+        f"tags:",
+        f"  - daily",
+    ]
+    for et in sorted(entity_types):
+        lines.append(f"  - has/{et}")
+    lines += [
         f"entities: {json.dumps(sorted(all_entities))}",
-        f"sessions: {len(existing_sessions) + 1}",
+        f"entity_count: {len(all_entities)}",
+        f"sessions: {session_count}",
+        f"cssclasses:",
+        f"  - daily",
         "---", "",
         f"# {date}", "",
-        "## Summary", "",
     ]
+
+    # Prev/next day navigation
+    daily_files = sorted(f[:-3] for f in os.listdir(daily_dir) if f.endswith(".md")) if os.path.isdir(daily_dir) else []
+    prev_day = next_day = None
+    if date in daily_files:
+        idx = daily_files.index(date)
+        if idx > 0:
+            prev_day = daily_files[idx - 1]
+        if idx < len(daily_files) - 1:
+            next_day = daily_files[idx + 1]
+    elif daily_files:
+        # New date — find nearest previous
+        earlier = [d for d in daily_files if d < date]
+        if earlier:
+            prev_day = earlier[-1]
+
+    nav_parts = []
+    if prev_day:
+        nav_parts.append(f"← [[{prev_day}|prev]]")
+    if next_day:
+        nav_parts.append(f"[[{next_day}|next]] →")
+    if nav_parts:
+        lines.append(" | ".join(nav_parts))
+        lines.append("")
+
+    lines += ["## Summary", ""]
 
     # Append existing + new summary
     for s in existing_sessions:
@@ -119,7 +219,8 @@ def cmd_replay(args):
     for name in sorted(all_entities):
         e = next((x for x in entities if x["name"] == name), None)
         if e:
-            lines.append(f"- [[{name}]] ({e.get('entity_type', '?')}): {e.get('description', '')[:100]}")
+            etype = e.get('entity_type', '?')
+            lines.append(f"- [[{name}]] `{etype}` — {e.get('description', '')[:120]}")
         else:
             lines.append(f"- [[{name}]]")
 
@@ -493,15 +594,33 @@ def cmd_save_pattern(args):
         if confidence < 0.5:
             continue
 
+        # Determine confidence tier for tag
+        if confidence >= 0.8:
+            conf_tier = "high"
+        elif confidence >= 0.6:
+            conf_tier = "medium"
+        else:
+            conf_tier = "low"
+
         lines = [
-            "---", f"name: {name}", f"confidence: {confidence}",
+            "---",
+            f"tags:",
+            f"  - pattern",
+            f"  - confidence/{conf_tier}",
+            f"name: \"{name}\"",
+            f"confidence: {confidence}",
             f"evidence_count: {len(evidence)}",
             f"last_updated: {datetime.now().strftime('%Y-%m-%d')}",
-            "---", "", f"# {name}", "",
-            p.get("description", ""), "", "## Evidence", "",
+            f"cssclasses:",
+            f"  - pattern",
+            "---", "",
+            f"# {name}", "",
+            p.get("description", ""), "",
+            "## Evidence", "",
         ]
         for e in evidence:
             lines.append(f"- [[{e}]]")
+        lines.append("")
 
         with open(os.path.join(pattern_dir, fname), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
@@ -509,6 +628,106 @@ def cmd_save_pattern(args):
 
     _git_sync(vault, f"engram abstract: {len(saved)} patterns")
     print(json.dumps({"status": "ok", "patterns_saved": saved}))
+
+
+# ── context ────────────────────────────────────────────
+
+def cmd_context(args):
+    """Output compact summary for injecting into agent system prompt.
+
+    Inspired by community/engram's mem_context — returns recent activity
+    and top entities in a token-efficient format.
+    """
+    graph = MemoryGraph(args.vault)
+    vault = args.vault
+
+    # Top entities by degree (hub nodes)
+    G = graph._graph
+    entities_by_degree = sorted(
+        [(n, G.degree(n), dict(G.nodes[n])) for n in G.nodes()],
+        key=lambda x: -x[1],
+    )
+
+    # Recent daily summaries (last 3)
+    daily_dir = os.path.join(vault, "daily")
+    recent_summaries = []
+    if os.path.isdir(daily_dir):
+        for fname in sorted(os.listdir(daily_dir), reverse=True)[:3]:
+            if not fname.endswith(".md"):
+                continue
+            with open(os.path.join(daily_dir, fname), "r") as f:
+                content = f.read()
+            bullets = []
+            if "## Summary" in content:
+                idx = content.index("## Summary")
+                section = content[idx:]
+                next_heading = section.find("\n## ", 1)
+                if next_heading != -1:
+                    section = section[:next_heading]
+                for line in section.split("\n"):
+                    if line.strip().startswith("- "):
+                        bullets.append(line.strip()[2:])
+            if bullets:
+                recent_summaries.append({"date": fname[:-3], "summaries": bullets})
+
+    # Build compact context
+    parts = []
+
+    # Hub entities (top 10)
+    if entities_by_degree:
+        entity_lines = []
+        for name, degree, attrs in entities_by_degree[:10]:
+            etype = attrs.get("entity_type", "?")
+            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:100]
+            entity_lines.append(f"- {name} ({etype}, {degree} connections): {desc}")
+        parts.append("## Key Entities\n" + "\n".join(entity_lines))
+
+    # Recent activity
+    if recent_summaries:
+        activity_lines = []
+        for s in recent_summaries:
+            activity_lines.append(f"### {s['date']}")
+            for b in s["summaries"]:
+                activity_lines.append(f"- {b}")
+        parts.append("## Recent Activity\n" + "\n".join(activity_lines))
+
+    # Patterns
+    pattern_dir = os.path.join(vault, "patterns")
+    if os.path.isdir(pattern_dir):
+        pattern_lines = []
+        for fname in os.listdir(pattern_dir):
+            if fname.endswith(".md"):
+                with open(os.path.join(pattern_dir, fname), "r") as f:
+                    content = f.read()
+                # Extract name and description
+                name = ""
+                desc = ""
+                past_frontmatter = False
+                frontmatter_count = 0
+                for line in content.split("\n"):
+                    if line.strip() == "---":
+                        frontmatter_count += 1
+                        if frontmatter_count == 2:
+                            past_frontmatter = True
+                        continue
+                    if past_frontmatter:
+                        if line.startswith("# "):
+                            name = line[2:].strip()
+                        elif name and line.strip() and not line.startswith("#"):
+                            desc = line.strip()
+                            break
+                if name:
+                    pattern_lines.append(f"- {name}: {desc[:80]}")
+        if pattern_lines:
+            parts.append("## Known Patterns\n" + "\n".join(pattern_lines))
+
+    context_text = "\n\n".join(parts)
+
+    print(json.dumps({
+        "context": context_text,
+        "entity_count": graph.node_count,
+        "edge_count": graph.edge_count,
+    }, indent=2))
 
 
 # ── status ──────────────────────────────────────────────
@@ -542,9 +761,29 @@ def cmd_status(args):
     # Entity list for dedup awareness
     entities = sorted(graph.all_entity_names())
 
+    # Hub entities (top 5 by degree)
+    G = graph._graph
+    hubs = sorted(
+        [(n, G.degree(n)) for n in G.nodes()],
+        key=lambda x: -x[1],
+    )[:5]
+
+    # Type distribution
+    type_dist = defaultdict(int)
+    for n in G.nodes():
+        etype = G.nodes[n].get("entity_type", "UNKNOWN")
+        type_dist[etype] += 1
+
+    # Graph density
+    import networkx
+    density = networkx.density(G) if G.number_of_nodes() > 1 else 0.0
+
     print(json.dumps({
         "nodes": graph.node_count,
         "edges": graph.edge_count,
+        "density": round(density, 4),
+        "type_distribution": dict(type_dist),
+        "hub_entities": [{"name": n, "degree": d} for n, d in hubs],
         "daily_notes": count_md("daily"),
         "patterns": count_md("patterns"),
         "communities": count_md("communities"),
@@ -559,7 +798,7 @@ def cmd_status(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Engram CLI")
-    parser.add_argument("command", choices=["replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query"])
+    parser.add_argument("command", choices=["replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query", "context"])
     parser.add_argument("--vault", default=DEFAULT_VAULT)
     parser.add_argument("--stdin", action="store_true")
     parser.add_argument("--question", default="")
@@ -568,7 +807,8 @@ def main():
     {"replay": cmd_replay, "integrate": cmd_integrate, "prune": cmd_prune,
      "community": cmd_community, "abstract": cmd_abstract,
      "save-pattern": cmd_save_pattern,
-     "status": cmd_status, "query": cmd_query}[args.command](args)
+     "status": cmd_status, "query": cmd_query,
+     "context": cmd_context}[args.command](args)
 
 
 if __name__ == "__main__":
