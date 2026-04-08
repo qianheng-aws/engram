@@ -126,7 +126,17 @@ touch ~/.engram/vault/_meta/hook-enabled
 
 ## 🗂️ Vault Structure
 
-Open `~/.engram/vault/` in [Obsidian](https://obsidian.md) for graph visualization.
+Open the vault in [Obsidian](https://obsidian.md) to get an interactive knowledge graph:
+
+1. Install Obsidian from [obsidian.md](https://obsidian.md)
+2. Open Obsidian → **Open folder as vault** → select `~/.engram/vault/`
+3. Toggle **Graph View** (Ctrl/Cmd + G) to see your knowledge graph
+
+<div align="center">
+<img src="docs/obsidian-graph.png" alt="Engram knowledge graph in Obsidian" width="700">
+
+*Entity nodes colored by type, with tags, wikilinks, and Graph View visualization*
+</div>
 
 ```
 ~/.engram/vault/
