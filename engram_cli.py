@@ -2,16 +2,17 @@
 """Engram CLI — called by CC /engram command.
 
 Usage:
-    engram init [PATH]
-    engram auto [on|off|status] --vault PATH
-    engram replay --stdin --vault PATH
-    engram integrate --vault PATH [--stdin]  # --stdin for merge instructions
-    engram prune --vault PATH [--stdin]      # --stdin for archive confirmation
-    engram community --vault PATH [--stdin]   # --stdin for community summaries
-    engram abstract --vault PATH
-    engram save-pattern --vault PATH --stdin
-    engram status --vault PATH
-    engram query --vault PATH --question "..."
+    engram init [PATH]                         # init vault, save path to ~/.engram/config.json
+    engram auto [on|off|status]                 # toggle auto-capture
+    engram replay --stdin                       # process extracted JSON
+    engram integrate [--stdin]                  # detect or execute merges
+    engram prune [--stdin]                      # score or execute archival
+    engram community [--stdin]                  # detect or save community summaries
+    engram abstract                             # gather data for pattern discovery
+    engram save-pattern --stdin                 # save discovered patterns
+    engram status                               # vault statistics
+    engram query --question "..."               # search graph
+    All commands accept optional --vault PATH to override the saved default.
 """
 
 import argparse
@@ -26,8 +27,32 @@ from datetime import datetime
 
 from engram.graph import MemoryGraph
 
-DEFAULT_VAULT = os.path.expanduser("~/.engram/vault")
+CONFIG_PATH = os.path.expanduser("~/.engram/config.json")
+FALLBACK_VAULT = os.path.expanduser("~/.engram/vault")
 GRAPH_FIELD_SEP = "<SEP>"
+
+
+def _load_vault_path():
+    """Load vault path from config, falling back to default."""
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f).get("vault", FALLBACK_VAULT)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return FALLBACK_VAULT
+
+
+def _save_vault_path(vault: str):
+    """Save vault path to config."""
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    config = {}
+    try:
+        with open(CONFIG_PATH) as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    config["vault"] = os.path.abspath(vault)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=2)
 
 
 def _git_sync(vault: str, message: str = "auto-sync"):
@@ -49,8 +74,10 @@ def _git_sync(vault: str, message: str = "auto-sync"):
 
 def cmd_init(args):
     """Initialize a new engram vault directory."""
-    vault = args.init_path or args.vault
+    vault = args.init_path or FALLBACK_VAULT
+    vault = os.path.abspath(vault)
     os.makedirs(os.path.join(vault, "_meta"), exist_ok=True)
+    _save_vault_path(vault)
     print(json.dumps({"status": "ok", "vault": vault}))
 
 
@@ -829,10 +856,14 @@ def main():
     parser = argparse.ArgumentParser(description="Engram CLI")
     parser.add_argument("command", choices=["init", "auto", "replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query", "context"])
     parser.add_argument("init_path", nargs="?", default=None, help="Positional arg: vault path for init, on/off/status for auto")
-    parser.add_argument("--vault", default=DEFAULT_VAULT)
+    parser.add_argument("--vault", default=None)
     parser.add_argument("--stdin", action="store_true")
     parser.add_argument("--question", default="")
     args = parser.parse_args()
+
+    # Resolve vault: explicit --vault > config > fallback
+    if args.vault is None:
+        args.vault = _load_vault_path()
 
     if args.command == "auto":
         args.auto_action = args.init_path or "status"

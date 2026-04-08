@@ -7,8 +7,7 @@ Extract entities and relations from the current session conversation and persist
 **1. Check existing entities:**
 
 ```bash
-engram status --vault ~/.engram/vault
-```
+engram status```
 
 **2. Analyze this conversation** and extract entities + relations following these rules:
 

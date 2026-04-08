@@ -7,8 +7,7 @@ Detect clusters of related entities in the knowledge graph using Louvain communi
 **1. Detect communities:**
 
 ```bash
-engram community --vault ~/.engram/vault
-```
+engram community```
 
 **2. Review the detected communities.** For each community with 2+ members:
 - Generate a concise **title** (e.g., "Slack Bridge Infrastructure", "Memory System Design")

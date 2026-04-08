@@ -8,20 +8,17 @@ Run all five engram stages: replay, integrate, prune, community, abstract.
 
 **2. Integrate** — Find duplicate entities:
 ```bash
-engram integrate --vault ~/.engram/vault
-```
+engram integrate```
 Review candidates and merge if needed.
 
 **3. Prune** — Check for decaying entities:
 ```bash
-engram prune --vault ~/.engram/vault
-```
+engram prune```
 Review fading/archivable entities.
 
 **4. Community** — Detect and summarize knowledge clusters:
 ```bash
-engram community --vault ~/.engram/vault
-```
+engram community```
 For each community, generate a title and summary. Then save:
 ```bash
 echo '<json>' | engram community --vault ~/.engram/vault --stdin
@@ -30,8 +27,7 @@ Community JSON: `{"communities": [{"id": 0, "title": "...", "summary": "...", "m
 
 **5. Abstract** — Discover behavioral patterns:
 ```bash
-engram abstract --vault ~/.engram/vault
-```
+engram abstract```
 Analyze the returned daily notes for recurring behaviors, decision preferences, and problem patterns. Output JSON and save:
 ```bash
 echo '<json>' | engram save-pattern --vault ~/.engram/vault --stdin

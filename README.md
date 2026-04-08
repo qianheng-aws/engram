@@ -197,17 +197,18 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ## 🛠️ CLI Reference
 
 ```bash
-engram init [PATH]                              # Initialize vault (default: ~/.engram/vault)
+engram init [PATH]                              # Initialize vault, save path to ~/.engram/config.json
 engram auto [on|off|status]                     # Toggle auto-capture on session end
-engram replay --vault PATH --stdin              # Process extracted JSON (with 15-min dedup)
-engram integrate --vault PATH [--stdin]         # Detect or execute merges
-engram prune --vault PATH [--stdin]             # Score or execute archival
-engram community --vault PATH [--stdin]         # Detect or save community summaries
-engram abstract --vault PATH                    # Gather data for pattern discovery
-engram save-pattern --vault PATH --stdin        # Save discovered patterns
-engram status --vault PATH                      # Vault statistics + hub entities + density
-engram query --vault PATH --question "..."      # Search graph
-engram context --vault PATH                     # Compact summary for system prompt injection
+engram status                                   # Vault statistics + hub entities + density
+engram query --question "..."                   # Search graph
+engram replay --stdin                           # Process extracted JSON (with 15-min dedup)
+engram integrate [--stdin]                      # Detect or execute merges
+engram prune [--stdin]                          # Score or execute archival
+engram community [--stdin]                      # Detect or save community summaries
+engram abstract                                 # Gather data for pattern discovery
+engram save-pattern --stdin                     # Save discovered patterns
+engram context                                  # Compact summary for system prompt injection
+# All commands use the vault from last `engram init`. Override with --vault PATH.
 ```
 
 ## 📄 License
