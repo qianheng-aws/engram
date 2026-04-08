@@ -13,10 +13,15 @@ engram community```
 - Generate a concise **title** (e.g., "Slack Bridge Infrastructure", "Memory System Design")
 - Write a **summary** paragraph explaining what connects these entities
 
-**3. Pipe summaries back:**
+**3. Review `surprising_connections`.** If cross-community edges exist, generate an additional **cross-community comparison** entry:
+- Title should reflect the shared theme (e.g., "AI Memory Systems Comparison")
+- Summary should include a **structured comparison** (markdown table or bullet matrix) covering key dimensions across the connected entities
+- Members list includes all entities involved in the surprising connections
+
+**4. Pipe summaries back:**
 
 ```bash
-echo '<json>' | engram community --vault ~/.engram/vault --stdin
+echo '<json>' | engram community --stdin
 ```
 
 JSON format:

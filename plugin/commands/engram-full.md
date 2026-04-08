@@ -19,9 +19,9 @@ Review fading/archivable entities.
 **4. Community** — Detect and summarize knowledge clusters:
 ```bash
 engram community```
-For each community, generate a title and summary. Then save:
+For each community, generate a title and summary. If `surprising_connections` exist, also generate a cross-community comparison entry with a structured comparison (table or matrix) of the connected entities. Then save:
 ```bash
-echo '<json>' | engram community --vault ~/.engram/vault --stdin
+echo '<json>' | engram community --stdin
 ```
 Community JSON: `{"communities": [{"id": 0, "title": "...", "summary": "...", "members": ["A", "B"]}]}`
 
@@ -30,6 +30,6 @@ Community JSON: `{"communities": [{"id": 0, "title": "...", "summary": "...", "m
 engram abstract```
 Analyze the returned daily notes for recurring behaviors, decision preferences, and problem patterns. Output JSON and save:
 ```bash
-echo '<json>' | engram save-pattern --vault ~/.engram/vault --stdin
+echo '<json>' | engram save-pattern --stdin
 ```
 Pattern JSON: `{"new_patterns": [{"name": "...", "description": "...", "evidence": ["2026-04-06"], "confidence": 0.7}], "updated_patterns": []}`
