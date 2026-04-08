@@ -147,14 +147,16 @@ class MemoryGraph:
             os.makedirs(dirpath, exist_ok=True)
 
             description = attrs.get("description", "")
-            first_desc = description.split(GRAPH_FIELD_SEP)[0] if description else ""
+            # Use latest description (after SEP) if available, else first
+            desc_parts = description.split(GRAPH_FIELD_SEP) if description else [""]
+            full_desc = desc_parts[-1].strip() if desc_parts else ""
             degree = self._graph.degree(node_id)
 
             relations = []
             neighbor_types = set()
             for neighbor in self._graph.neighbors(node_id):
                 edge = self._graph.edges[node_id, neighbor]
-                desc = (edge.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
+                desc = (edge.get("description", "") or "").split(GRAPH_FIELD_SEP)[-1]
                 weight = float(edge.get("weight", 1))
                 relations.append((neighbor, desc, weight))
                 n_type = self._graph.nodes[neighbor].get("entity_type", "")
@@ -195,8 +197,25 @@ class MemoryGraph:
                 f"  - {type_lower}",
                 "---", "",
                 f"# {node_id}", "",
-                first_desc, "",
             ]
+
+            # Full markdown description (not truncated)
+            if full_desc:
+                lines.append(full_desc)
+                lines.append("")
+
+            # References section
+            refs_raw = attrs.get("references", "")
+            if refs_raw:
+                try:
+                    refs = json.loads(refs_raw) if isinstance(refs_raw, str) else refs_raw
+                except (json.JSONDecodeError, TypeError):
+                    refs = []
+                if refs:
+                    lines += ["## References", ""]
+                    for url in refs:
+                        lines.append(f"- {url}")
+                    lines.append("")
 
             if relations:
                 lines += ["## Relations", ""]

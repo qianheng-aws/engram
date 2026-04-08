@@ -171,13 +171,17 @@ def cmd_replay(args):
     summary = data.get("daily_summary", "")
 
     for e in entities:
-        graph.upsert_entity(e["name"], {
+        attrs = {
             "entity_type": e.get("entity_type", "CONCEPT"),
             "description": e.get("description", ""),
             "confidence": e.get("confidence", "EXTRACTED"),
             "source_id": f"session-{date}",
             "last_updated": date,
-        })
+        }
+        refs = e.get("references", [])
+        if refs:
+            attrs["references"] = json.dumps(refs)
+        graph.upsert_entity(e["name"], attrs)
 
     for r in relations:
         graph.upsert_relation(r["source"], r["target"], {

@@ -404,6 +404,130 @@ def test_pretool_hook_ignores_non_search():
         print("  ✅ PreToolUse hook ignores non-search tools")
 
 
+# ── Test rich content ─────────────────────────────────────
+
+def test_markdown_description_preserved():
+    """Markdown in description should be rendered fully in entity file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        md_desc = (
+            "Bug where stderr fills 64KB pipe buffer.\n\n"
+            "**Root cause:** `subprocess.PIPE` without consumer.\n\n"
+            "```python\nasync def _drain(proc):\n    await proc.stderr.read()\n```"
+        )
+        g.upsert_entity("PIPE_BUG", {
+            "entity_type": "CONCEPT",
+            "description": md_desc,
+        })
+        g.save()
+
+        md_path = os.path.join(vault, "entities", "concepts", "PIPE_BUG.md")
+        with open(md_path) as f:
+            content = f.read()
+        assert "**Root cause:**" in content
+        assert "```python" in content
+        assert "async def _drain" in content
+        # Should NOT be truncated
+        assert "subprocess.PIPE" in content
+        print("  ✅ markdown description preserved in entity file")
+
+
+def test_references_rendered():
+    """References should appear as a section in entity markdown."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("MY_PROJECT", {
+            "entity_type": "PROJECT",
+            "description": "A cool project",
+            "references": json.dumps([
+                "https://github.com/user/repo",
+                "https://github.com/user/repo/issues/42",
+            ]),
+        })
+        g.save()
+
+        md_path = os.path.join(vault, "entities", "projects", "MY_PROJECT.md")
+        with open(md_path) as f:
+            content = f.read()
+        assert "## References" in content
+        assert "https://github.com/user/repo" in content
+        assert "https://github.com/user/repo/issues/42" in content
+        print("  ✅ references rendered in entity file")
+
+
+def test_references_empty_no_section():
+    """No References section when entity has no references."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("NO_REFS", {
+            "entity_type": "CONCEPT",
+            "description": "No refs here",
+        })
+        g.save()
+
+        md_path = os.path.join(vault, "entities", "concepts", "NO_REFS.md")
+        with open(md_path) as f:
+            content = f.read()
+        assert "## References" not in content
+        print("  ✅ no References section when empty")
+
+
+def test_cli_replay_references():
+    """engram replay should store references from input JSON."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+
+        payload = json.dumps({
+            "date": "2026-04-08",
+            "entities": [{
+                "name": "REF_TEST",
+                "entity_type": "PROJECT",
+                "description": "Test with refs",
+                "confidence": "EXTRACTED",
+                "references": ["https://example.com"],
+            }],
+            "relations": [],
+            "daily_summary": "Test",
+        })
+
+        result = subprocess.run(
+            [sys.executable, "-m", "engram_cli", "replay", "--vault", vault, "--stdin"],
+            input=payload, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        g = MemoryGraph(vault)
+        refs = g.get_entity("REF_TEST").get("references", "")
+        assert "https://example.com" in refs
+        print("  ✅ CLI replay stores references")
+
+
+def test_description_uses_latest():
+    """When description is updated, entity file should show latest version."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("EVOLVING", {
+            "entity_type": "CONCEPT",
+            "description": "Initial description",
+        })
+        g.upsert_entity("EVOLVING", {
+            "entity_type": "CONCEPT",
+            "description": "Updated with **more detail** and `code`",
+        })
+        g.save()
+
+        md_path = os.path.join(vault, "entities", "concepts", "EVOLVING.md")
+        with open(md_path) as f:
+            content = f.read()
+        assert "**more detail**" in content
+        assert "`code`" in content
+        print("  ✅ entity file uses latest description")
+
+
 if __name__ == "__main__":
     print("Testing confidence tagging...")
     test_confidence_stored_on_entity()
@@ -431,5 +555,12 @@ if __name__ == "__main__":
     test_pretool_hook_with_graph()
     test_pretool_hook_no_graph()
     test_pretool_hook_ignores_non_search()
+
+    print("\nTesting rich content...")
+    test_markdown_description_preserved()
+    test_references_rendered()
+    test_references_empty_no_section()
+    test_cli_replay_references()
+    test_description_uses_latest()
 
     print("\n🎉 All feature tests passed!")
