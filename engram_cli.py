@@ -463,7 +463,8 @@ def cmd_query(args):
     graph = MemoryGraph(args.vault)
     question = args.question
     names = graph.all_entity_names()
-    tokens = [t.upper() for t in question.split() if len(t) > 2]
+    tokens = [re.sub(r'[^\w]', '', t).upper() for t in question.split() if len(t) > 2]
+    tokens = [t for t in tokens if t]  # remove empty after stripping
 
     # 1. Keyword match on entity names
     matched = [n for n in names if any(tok in n for tok in tokens)]
