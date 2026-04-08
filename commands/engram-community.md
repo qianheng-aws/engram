@@ -7,7 +7,7 @@ Detect clusters of related entities in the knowledge graph using Louvain communi
 **1. Detect communities:**
 
 ```bash
-engram-cli community --vault ~/.engram/vault
+python3 "${CLAUDE_PLUGIN_ROOT}/engram_cli.py" community --vault ~/.engram/vault
 ```
 
 **2. Review the detected communities.** For each community with 2+ members:
@@ -17,7 +17,7 @@ engram-cli community --vault ~/.engram/vault
 **3. Pipe summaries back:**
 
 ```bash
-echo '<json>' | engram-cli community --vault ~/.engram/vault --stdin
+echo '<json>' | python3 "${CLAUDE_PLUGIN_ROOT}/engram_cli.py" community --vault ~/.engram/vault --stdin
 ```
 
 JSON format:

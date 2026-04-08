@@ -9,7 +9,7 @@
     {
       "name": "engram",
       "description": "Persistent memory — extract knowledge from sessions into an Obsidian vault knowledge graph",
-      "source": "./plugin",
+      "source": ".",
       "category": "productivity"
     }
   ]
