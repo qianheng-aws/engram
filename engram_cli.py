@@ -2,14 +2,16 @@
 """Engram CLI — called by CC /engram command.
 
 Usage:
-    engram_cli.py replay --stdin --vault PATH
-    engram_cli.py integrate --vault PATH [--stdin]  # --stdin for merge instructions
-    engram_cli.py prune --vault PATH [--stdin]      # --stdin for archive confirmation
-    engram_cli.py community --vault PATH [--stdin]   # --stdin for community summaries
-    engram_cli.py abstract --vault PATH
-    engram_cli.py save-pattern --vault PATH --stdin
-    engram_cli.py status --vault PATH
-    engram_cli.py query --vault PATH --question "..."
+    engram init [PATH]
+    engram auto [on|off|status] --vault PATH
+    engram replay --stdin --vault PATH
+    engram integrate --vault PATH [--stdin]  # --stdin for merge instructions
+    engram prune --vault PATH [--stdin]      # --stdin for archive confirmation
+    engram community --vault PATH [--stdin]   # --stdin for community summaries
+    engram abstract --vault PATH
+    engram save-pattern --vault PATH --stdin
+    engram status --vault PATH
+    engram query --vault PATH --question "..."
 """
 
 import argparse
@@ -41,6 +43,32 @@ def _git_sync(vault: str, message: str = "auto-sync"):
             subprocess.run(["git", "push"], cwd=vault, capture_output=True, timeout=30)
     except Exception:
         pass  # Never fail the engram because of git
+
+
+# ── init ───────────────────────────────────────────────
+
+def cmd_init(args):
+    """Initialize a new engram vault directory."""
+    vault = args.init_path or args.vault
+    os.makedirs(os.path.join(vault, "_meta"), exist_ok=True)
+    print(json.dumps({"status": "ok", "vault": vault}))
+
+
+def cmd_auto(args):
+    """Toggle auto-replay hook on/off."""
+    vault = args.vault
+    hook_flag = os.path.join(vault, "_meta", "hook-enabled")
+    if args.auto_action == "on":
+        os.makedirs(os.path.dirname(hook_flag), exist_ok=True)
+        open(hook_flag, "w").close()
+        print(json.dumps({"status": "ok", "auto_replay": "enabled"}))
+    elif args.auto_action == "off":
+        if os.path.exists(hook_flag):
+            os.remove(hook_flag)
+        print(json.dumps({"status": "ok", "auto_replay": "disabled"}))
+    else:
+        enabled = os.path.exists(hook_flag)
+        print(json.dumps({"status": "ok", "auto_replay": "enabled" if enabled else "disabled"}))
 
 
 # ── replay ──────────────────────────────────────────────
@@ -799,14 +827,18 @@ def cmd_status(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Engram CLI")
-    parser.add_argument("command", choices=["replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query", "context"])
+    parser.add_argument("command", choices=["init", "auto", "replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query", "context"])
+    parser.add_argument("init_path", nargs="?", default=None, help="Positional arg: vault path for init, on/off/status for auto")
     parser.add_argument("--vault", default=DEFAULT_VAULT)
     parser.add_argument("--stdin", action="store_true")
     parser.add_argument("--question", default="")
     args = parser.parse_args()
 
-    {"replay": cmd_replay, "integrate": cmd_integrate, "prune": cmd_prune,
-     "community": cmd_community, "abstract": cmd_abstract,
+    if args.command == "auto":
+        args.auto_action = args.init_path or "status"
+
+    {"init": cmd_init, "auto": cmd_auto, "replay": cmd_replay, "integrate": cmd_integrate,
+     "prune": cmd_prune, "community": cmd_community, "abstract": cmd_abstract,
      "save-pattern": cmd_save_pattern,
      "status": cmd_status, "query": cmd_query,
      "context": cmd_context}[args.command](args)

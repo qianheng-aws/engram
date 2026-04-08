@@ -7,7 +7,7 @@ Extract entities and relations from the current session conversation and persist
 **1. Check existing entities:**
 
 ```bash
-engram-cli status --vault ~/.engram/vault
+engram status --vault ~/.engram/vault
 ```
 
 **2. Analyze this conversation** and extract entities + relations following these rules:
@@ -36,7 +36,7 @@ engram-cli status --vault ~/.engram/vault
 **3. Pipe extracted JSON:**
 
 ```bash
-echo '<json>' | engram-cli replay --vault ~/.engram/vault --stdin
+echo '<json>' | engram replay --vault ~/.engram/vault --stdin
 ```
 
 JSON format:

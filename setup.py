@@ -9,5 +9,5 @@ setup(
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=["networkx"],
-    entry_points={"console_scripts": ["engram-cli=engram_cli:main"]},
+    entry_points={"console_scripts": ["engram=engram_cli:main"]},
 )

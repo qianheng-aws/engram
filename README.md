@@ -78,14 +78,14 @@ cd engram
 pip install -e .
 
 # 2. Initialize vault
-mkdir -p ~/.engram/vault/{entities/{people,concepts,projects,tools,orgs},relations,communities,daily,dreams,patterns,preferences,_meta}
+engram init ~/.engram/vault
 
 # 3. Register as CC plugin
 claude plugin marketplace add .
 claude plugin install engram
 
 # 4. (Optional) Enable auto-capture on session end
-touch ~/.engram/vault/_meta/hook-enabled
+engram auto on
 ```
 
 ## 🎮 Commands
@@ -197,15 +197,17 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ## 🛠️ CLI Reference
 
 ```bash
-engram_cli.py replay --vault PATH --stdin        # Process extracted JSON (with 15-min dedup)
-engram_cli.py integrate --vault PATH [--stdin]   # Detect or execute merges
-engram_cli.py prune --vault PATH [--stdin]       # Score or execute archival
-engram_cli.py community --vault PATH [--stdin]   # Detect or save community summaries
-engram_cli.py abstract --vault PATH              # Gather data for pattern discovery
-engram_cli.py save-pattern --vault PATH --stdin   # Save discovered patterns
-engram_cli.py status --vault PATH                # Vault statistics + hub entities + density
-engram_cli.py query --vault PATH --question "..." # Search graph
-engram_cli.py context --vault PATH               # Compact summary for system prompt injection
+engram init [PATH]                              # Initialize vault (default: ~/.engram/vault)
+engram auto [on|off|status]                     # Toggle auto-capture on session end
+engram replay --vault PATH --stdin              # Process extracted JSON (with 15-min dedup)
+engram integrate --vault PATH [--stdin]         # Detect or execute merges
+engram prune --vault PATH [--stdin]             # Score or execute archival
+engram community --vault PATH [--stdin]         # Detect or save community summaries
+engram abstract --vault PATH                    # Gather data for pattern discovery
+engram save-pattern --vault PATH --stdin        # Save discovered patterns
+engram status --vault PATH                      # Vault statistics + hub entities + density
+engram query --vault PATH --question "..."      # Search graph
+engram context --vault PATH                     # Compact summary for system prompt injection
 ```
 
 ## 📄 License
