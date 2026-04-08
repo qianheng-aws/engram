@@ -337,7 +337,7 @@ def cmd_integrate(args):
         "status": "ok",
         "total_entities": len(names),
         "duplicate_candidates": candidates[:20],
-        "message": "Review candidates. To merge, pipe: {\"merges\": [{\"canonical\": \"KEEP_NAME\", \"aliases\": [\"REMOVE_NAME\"]}]} | engram_cli.py integrate --vault PATH --stdin",
+        "message": "Review candidates. To merge, pipe: {\"merges\": [{\"canonical\": \"KEEP_NAME\", \"aliases\": [\"REMOVE_NAME\"]}]} | engram integrate --vault PATH --stdin",
     }))
 
 
@@ -440,7 +440,7 @@ def cmd_prune(args):
         "total_entities": len(scores),
         "fading": fading[:20],
         "archivable": archivable[:20],
-        "message": "To archive, pipe: {\"archive\": [\"ENTITY_A\"]} | engram_cli.py prune --vault PATH --stdin",
+        "message": "To archive, pipe: {\"archive\": [\"ENTITY_A\"]} | engram prune --vault PATH --stdin",
     }))
 
 
@@ -480,7 +480,7 @@ def cmd_community(args):
         "total_edges": graph.edge_count,
         "communities_found": len(communities),
         "communities": communities,
-        "message": "Review communities. For each, generate a title and summary. Then pipe: {\"communities\": [{\"id\": 0, \"title\": \"...\", \"summary\": \"...\", \"members\": [\"A\", \"B\"]}]} | engram_cli.py community --vault PATH --stdin",
+        "message": "Review communities. For each, generate a title and summary. Then pipe: {\"communities\": [{\"id\": 0, \"title\": \"...\", \"summary\": \"...\", \"members\": [\"A\", \"B\"]}]} | engram community --vault PATH --stdin",
     }, indent=2))
 
 
@@ -603,7 +603,7 @@ def cmd_abstract(args):
     print(json.dumps({
         "daily_notes": dailies,
         "existing_patterns": patterns,
-        "message": "Analyze daily notes for recurring behaviors. Output JSON with new_patterns and updated_patterns arrays. Each pattern: {name, description, evidence: [dates], confidence: 0.0-1.0}. Pipe result to: engram_cli.py save-pattern --vault PATH --stdin",
+        "message": "Analyze daily notes for recurring behaviors. Output JSON with new_patterns and updated_patterns arrays. Each pattern: {name, description, evidence: [dates], confidence: 0.0-1.0}. Pipe result to: engram save-pattern --vault PATH --stdin",
     }, indent=2))
 
 
