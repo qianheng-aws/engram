@@ -147,7 +147,16 @@ Open `~/.engram/vault/` in [Obsidian](https://obsidian.md) for graph visualizati
 ```markdown
 ---
 entity_type: CONCEPT
-source_id: session-2026-04-03
+tags:
+  - entity/concept
+aliases:
+  - "Stderr Pipe Blocking"
+created: 2026-04-03
+last_updated: 2026-04-03
+degree: 1
+cssclasses:
+  - entity
+  - concept
 ---
 
 # STDERR_PIPE_BLOCKING
@@ -158,10 +167,10 @@ and block the entire process. Fixed by adding _drain_stderr task.
 
 ## Relations
 
-- [[CLAUDE_SLACK_BRIDGE]] — Bridge had this bug causing sessions to hang (weight: 0.8)
+- [[CLAUDE_SLACK_BRIDGE]] `PROJECT` — Bridge had this bug causing sessions to hang (weight: 0.8)
 ```
 
-Every entity links to related entities via `[[wikilinks]]` — Obsidian renders these as an interactive graph.
+Every entity links to related entities via `[[wikilinks]]` — Obsidian renders these as an interactive graph. Tags, aliases, and cssclasses enable Dataview queries and Graph View styling.
 
 ## 🔧 Design Decisions
 
@@ -177,14 +186,15 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ## 🛠️ CLI Reference
 
 ```bash
-engram_cli.py replay --vault PATH --stdin        # Process extracted JSON
+engram_cli.py replay --vault PATH --stdin        # Process extracted JSON (with 15-min dedup)
 engram_cli.py integrate --vault PATH [--stdin]   # Detect or execute merges
 engram_cli.py prune --vault PATH [--stdin]       # Score or execute archival
 engram_cli.py community --vault PATH [--stdin]   # Detect or save community summaries
 engram_cli.py abstract --vault PATH              # Gather data for pattern discovery
 engram_cli.py save-pattern --vault PATH --stdin   # Save discovered patterns
-engram_cli.py status --vault PATH                # Vault statistics
+engram_cli.py status --vault PATH                # Vault statistics + hub entities + density
 engram_cli.py query --vault PATH --question "..." # Search graph
+engram_cli.py context --vault PATH               # Compact summary for system prompt injection
 ```
 
 ## 📄 License
