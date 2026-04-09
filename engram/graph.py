@@ -424,6 +424,65 @@ class MemoryGraph:
 
         return {"isolated_nodes": isolated, "thin_communities": thin}
 
+    def suggested_questions(self, top_n: int = 5) -> list[dict]:
+        """Generate questions based on betweenness centrality.
+
+        High-betweenness nodes are bridges between communities —
+        questions about why they connect clusters reveal non-obvious insights.
+        """
+        G = self._graph
+        if G.number_of_nodes() < 3:
+            return []
+
+        betweenness = nx.betweenness_centrality(G, weight="weight")
+        if not betweenness or max(betweenness.values()) == 0:
+            return []
+
+        # Detect communities for context
+        communities_raw = nx.community.louvain_communities(G, weight="weight", seed=42)
+        node_community = {}
+        community_names = {}
+        for i, members in enumerate(sorted(communities_raw, key=len, reverse=True)):
+            for m in members:
+                node_community[m] = i
+            # Use the highest-degree member as community label
+            top_member = max(members, key=lambda n: G.degree(n))
+            community_names[i] = top_member
+
+        # Rank by betweenness, filter to nodes that actually bridge communities
+        candidates = []
+        for name, bc in sorted(betweenness.items(), key=lambda x: -x[1]):
+            if bc <= 0:
+                continue
+            neighbor_communities = set()
+            for neighbor in G.neighbors(name):
+                nc = node_community.get(neighbor)
+                if nc is not None:
+                    neighbor_communities.add(nc)
+            own_community = node_community.get(name)
+            if own_community is not None:
+                neighbor_communities.discard(own_community)
+            if not neighbor_communities:
+                continue
+
+            attrs = dict(G.nodes[name])
+            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+            connected_communities = sorted(
+                [community_names.get(c, f"community-{c}") for c in neighbor_communities]
+            )
+            question = f"Why does {name} connect to {', '.join(connected_communities[:3])}?"
+            candidates.append({
+                "node": name,
+                "question": question,
+                "betweenness": round(bc, 4),
+                "description": desc,
+                "connected_communities": len(neighbor_communities),
+            })
+            if len(candidates) >= top_n:
+                break
+
+        return candidates
+
     def _export_relation_index(self):
         rel_dir = os.path.join(self.vault_dir, "relations")
         os.makedirs(rel_dir, exist_ok=True)

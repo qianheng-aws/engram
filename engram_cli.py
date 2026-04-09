@@ -863,12 +863,21 @@ def cmd_context(args):
         if pattern_lines:
             parts.append("## Known Patterns\n" + "\n".join(pattern_lines))
 
+    # Suggested questions
+    suggested = graph.suggested_questions(top_n=5)
+    if suggested:
+        q_lines = []
+        for q in suggested:
+            q_lines.append(f"- {q['question']} (betweenness: {q['betweenness']})")
+        parts.append("## Suggested Questions\n" + "\n".join(q_lines))
+
     context_text = "\n\n".join(parts)
 
     print(json.dumps({
         "context": context_text,
         "entity_count": graph.node_count,
         "edge_count": graph.edge_count,
+        "suggested_questions": suggested,
     }, indent=2))
 
 

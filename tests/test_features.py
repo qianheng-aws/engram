@@ -667,7 +667,7 @@ def test_engram_hook_uses_config_vault():
 # ── Test knowledge gaps ──────────────────────────────────
 
 def test_knowledge_gaps_isolated_nodes():
-    """Nodes with degree <= 1 are reported as isolated."""
+    """Nodes with degree 0 are reported as isolated."""
     with tempfile.TemporaryDirectory() as tmpdir:
         vault = _make_vault(tmpdir)
         g = MemoryGraph(vault)
@@ -729,6 +729,58 @@ def test_cli_status_knowledge_gaps():
         isolated_names = [n["name"] for n in data["knowledge_gaps"]["isolated_nodes"]]
         assert "ORPHAN" in isolated_names
         print("  ✅ CLI status includes knowledge_gaps")
+
+
+# ── Test suggested questions ─────────────────────────────
+
+def test_suggested_questions_bridge_nodes():
+    """Suggested questions identify cross-community bridge nodes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = _build_test_graph(vault)
+
+        questions = g.suggested_questions(top_n=5)
+        assert len(questions) > 0
+        q = questions[0]
+        assert "question" in q
+        assert "node" in q
+        assert "betweenness" in q
+        print("  ✅ suggested questions: bridge nodes identified")
+
+
+def test_suggested_questions_empty_graph():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        questions = g.suggested_questions()
+        assert questions == []
+        print("  ✅ suggested questions: empty graph returns empty")
+
+
+def test_suggested_questions_single_node():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("SOLO", {"entity_type": "CONCEPT", "description": "alone"})
+        questions = g.suggested_questions()
+        assert questions == []
+        print("  ✅ suggested questions: single node returns empty")
+
+
+def test_cli_context_suggested_questions():
+    """engram context should include suggested_questions."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _build_test_graph(vault)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "engram_cli", "context", "--vault", vault],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        data = json.loads(result.stdout)
+        assert "suggested_questions" in data
+        print("  ✅ CLI context includes suggested_questions")
 
 
 if __name__ == "__main__":
