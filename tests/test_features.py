@@ -664,6 +664,73 @@ def test_engram_hook_uses_config_vault():
             assert False, "Hook did not write queue file to either location"
 
 
+# ── Test knowledge gaps ──────────────────────────────────
+
+def test_knowledge_gaps_isolated_nodes():
+    """Nodes with degree <= 1 are reported as isolated."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("CONNECTED_A", {"entity_type": "CONCEPT", "description": "A"})
+        g.upsert_entity("CONNECTED_B", {"entity_type": "CONCEPT", "description": "B"})
+        g.upsert_entity("LONELY", {"entity_type": "CONCEPT", "description": "No edges"})
+        g.upsert_relation("CONNECTED_A", "CONNECTED_B", {"description": "linked", "weight": 1.0})
+        g.save()
+
+        gaps = g.knowledge_gaps()
+        isolated_names = [n["name"] for n in gaps["isolated_nodes"]]
+        assert "LONELY" in isolated_names
+        assert "CONNECTED_A" not in isolated_names
+        assert "CONNECTED_B" not in isolated_names
+        print("  ✅ knowledge gaps: isolated nodes detected")
+
+
+def test_knowledge_gaps_thin_communities():
+    """Communities with < 3 members are flagged as thin."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = _build_test_graph(vault)
+
+        gaps = g.knowledge_gaps()
+        assert "thin_communities" in gaps
+        for tc in gaps["thin_communities"]:
+            assert tc["size"] < 3
+        print("  ✅ knowledge gaps: thin communities detected")
+
+
+def test_knowledge_gaps_empty_graph():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        gaps = g.knowledge_gaps()
+        assert gaps["isolated_nodes"] == []
+        assert gaps["thin_communities"] == []
+        print("  ✅ knowledge gaps: empty graph returns empty lists")
+
+
+def test_cli_status_knowledge_gaps():
+    """engram status should include knowledge_gaps."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("ORPHAN", {"entity_type": "CONCEPT", "description": "alone"})
+        g.upsert_entity("PAIR_A", {"entity_type": "CONCEPT", "description": "a"})
+        g.upsert_entity("PAIR_B", {"entity_type": "CONCEPT", "description": "b"})
+        g.upsert_relation("PAIR_A", "PAIR_B", {"description": "link", "weight": 1.0})
+        g.save()
+
+        result = subprocess.run(
+            [sys.executable, "-m", "engram_cli", "status", "--vault", vault],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        data = json.loads(result.stdout)
+        assert "knowledge_gaps" in data
+        isolated_names = [n["name"] for n in data["knowledge_gaps"]["isolated_nodes"]]
+        assert "ORPHAN" in isolated_names
+        print("  ✅ CLI status includes knowledge_gaps")
+
+
 if __name__ == "__main__":
     print("Testing confidence tagging...")
     test_confidence_stored_on_entity()

@@ -924,6 +924,9 @@ def cmd_status(args):
     import networkx
     density = networkx.density(G) if G.number_of_nodes() > 1 else 0.0
 
+    # Knowledge gaps
+    knowledge_gaps = graph.knowledge_gaps()
+
     print(json.dumps({
         "nodes": graph.node_count,
         "edges": graph.edge_count,
@@ -931,6 +934,7 @@ def cmd_status(args):
         "type_distribution": dict(type_dist),
         "confidence_distribution": dict(conf_dist),
         "god_nodes": god_nodes,
+        "knowledge_gaps": knowledge_gaps,
         "daily_notes": count_md("daily"),
         "patterns": count_md("patterns"),
         "communities": count_md("communities"),

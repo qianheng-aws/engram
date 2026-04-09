@@ -392,6 +392,38 @@ class MemoryGraph:
         results.sort(key=lambda x: -x["score"])
         return results[:top_n]
 
+    def knowledge_gaps(self) -> dict:
+        """Find isolated nodes and thin communities."""
+        G = self._graph
+
+        # Isolated: degree == 0 (no connections)
+        isolated = []
+        for name in G.nodes():
+            degree = G.degree(name)
+            if degree == 0:
+                attrs = dict(G.nodes[name])
+                desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+                isolated.append({
+                    "name": name,
+                    "entity_type": attrs.get("entity_type", "CONCEPT"),
+                    "degree": degree,
+                    "description": desc,
+                })
+
+        # Thin communities: size < 3
+        thin = []
+        if G.number_of_nodes() >= 3:
+            communities_raw = nx.community.louvain_communities(G, weight="weight", seed=42)
+            for i, members in enumerate(sorted(communities_raw, key=len, reverse=True)):
+                if len(members) < 3:
+                    thin.append({
+                        "community_id": i,
+                        "size": len(members),
+                        "members": sorted(members),
+                    })
+
+        return {"isolated_nodes": isolated, "thin_communities": thin}
+
     def _export_relation_index(self):
         rel_dir = os.path.join(self.vault_dir, "relations")
         os.makedirs(rel_dir, exist_ok=True)
