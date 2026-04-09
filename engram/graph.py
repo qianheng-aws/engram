@@ -245,6 +245,14 @@ class MemoryGraph:
                     lines.append(f"- [[{n}]] {type_badge} — {d} (weight: {w:.1f})")
                 lines.append("")
 
+            # Community membership (via Dataview)
+            lines += [
+                "## Communities", "",
+                "```dataview",
+                f"LIST FROM #community WHERE contains(members, \"{node_id}\")",
+                "```", "",
+            ]
+
             path = os.path.join(dirpath, self._safe_filename(node_id))
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
