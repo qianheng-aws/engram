@@ -1050,4 +1050,32 @@ if __name__ == "__main__":
     test_local_path_absent_when_empty()
     test_cli_replay_local_path()
 
+    print("\nTesting knowledge gaps...")
+    test_knowledge_gaps_isolated_nodes()
+    test_knowledge_gaps_thin_communities()
+    test_knowledge_gaps_empty_graph()
+    test_cli_status_knowledge_gaps()
+
+    print("\nTesting suggested questions...")
+    test_suggested_questions_bridge_nodes()
+    test_suggested_questions_empty_graph()
+    test_suggested_questions_single_node()
+    test_cli_context_suggested_questions()
+
+    print("\nTesting enhanced status...")
+    test_cli_status_enhanced()
+
+    print("\nTesting hyperedges...")
+    test_hyperedge_storage()
+    test_hyperedge_obsidian_moc()
+    test_hyperedge_empty()
+    test_hyperedge_dedup()
+    test_cli_replay_hyperedges()
+
+    print("\nTesting edge confidence score...")
+    test_edge_confidence_score_stored()
+    test_edge_confidence_score_default()
+    test_edge_confidence_score_in_relation_index()
+    test_cli_replay_confidence_score()
+
     print("\n🎉 All feature tests passed!")
