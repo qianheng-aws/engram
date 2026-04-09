@@ -130,7 +130,8 @@ engram auto on
 Open the vault in [Obsidian](https://obsidian.md) to get an interactive knowledge graph:
 
 1. Install Obsidian from [obsidian.md](https://obsidian.md)
-2. Open Obsidian → **Open folder as vault** → select `~/.engram/vault/`
+2. Open Obsidian → **Open folder as vault** → In the file picker, press `Cmd+Shift+G` and type `~/.engram/vault`
+   - Alternatively, use a visible path: `engram init ~/engram/vault`
 3. Toggle **Graph View** (Ctrl/Cmd + G) to see your knowledge graph
 
 <div align="center">
