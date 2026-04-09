@@ -944,20 +944,56 @@ def cmd_status(args):
 # ── main ────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Engram CLI")
-    parser.add_argument("command", choices=["install", "uninstall", "init", "auto", "replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query", "context"])
-    parser.add_argument("init_path", nargs="?", default=None, help="Positional arg: vault path for init, on/off/status for auto")
-    parser.add_argument("--vault", default=None)
-    parser.add_argument("--stdin", action="store_true")
-    parser.add_argument("--question", default="")
+    parser = argparse.ArgumentParser(prog="engram", description="Persistent memory for Claude Code — knowledge graph in Obsidian vault")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # Setup commands
+    p = sub.add_parser("install", help="Register engram in ~/.claude/CLAUDE.md")
+    p = sub.add_parser("uninstall", help="Remove engram from ~/.claude/CLAUDE.md")
+
+    p = sub.add_parser("init", help="Initialize vault and save path to config")
+    p.add_argument("init_path", nargs="?", default=None, help="Vault path (default: ~/.engram/vault)")
+
+    p = sub.add_parser("auto", help="Toggle auto-capture on session end")
+    p.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"], help="on/off/status (default: status)")
+
+    # Core commands
+    p = sub.add_parser("status", help="Show vault statistics, god nodes, and pending sessions")
+    p = sub.add_parser("query", help="Search knowledge graph with keyword + graph traversal")
+    p.add_argument("--question", required=True, help="Question to search for")
+
+    p = sub.add_parser("replay", help="Process CC-extracted entities/relations JSON from stdin")
+    p.add_argument("--stdin", action="store_true", required=True)
+
+    p = sub.add_parser("integrate", help="Detect duplicate entities or execute merges")
+    p.add_argument("--stdin", action="store_true", help="Pipe merge instructions")
+
+    p = sub.add_parser("prune", help="Score entities by decay or execute archival")
+    p.add_argument("--stdin", action="store_true", help="Pipe archive instructions")
+
+    p = sub.add_parser("community", help="Detect knowledge clusters or save community summaries")
+    p.add_argument("--stdin", action="store_true", help="Pipe community summaries")
+
+    p = sub.add_parser("abstract", help="Gather daily notes for behavioral pattern discovery")
+
+    p = sub.add_parser("save-pattern", help="Save CC-discovered behavioral patterns")
+    p.add_argument("--stdin", action="store_true", required=True)
+
+    p = sub.add_parser("context", help="Compact summary for system prompt injection")
+
+    # Global option: all subparsers get --vault
+    for name, sp in sub.choices.items():
+        if name not in ("install", "uninstall"):
+            sp.add_argument("--vault", default=None, help="Vault path (default: from config)")
+
     args = parser.parse_args()
 
     # Resolve vault: explicit --vault > config > fallback
-    if args.vault is None:
+    if hasattr(args, "vault") and args.vault is None:
         args.vault = _load_vault_path()
 
     if args.command == "auto":
-        args.auto_action = args.init_path or "status"
+        args.auto_action = args.action
 
     {"install": cmd_install, "uninstall": cmd_uninstall,
      "init": cmd_init, "auto": cmd_auto, "replay": cmd_replay, "integrate": cmd_integrate,
