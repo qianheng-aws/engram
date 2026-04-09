@@ -137,7 +137,12 @@ def cmd_init(args):
     os.makedirs(os.path.join(vault, "_meta"), exist_ok=True)
     _save_vault_path(vault)
     registered = _register_claude_md()
-    print(json.dumps({"status": "ok", "vault": vault, "claude_md": "registered" if registered else "already registered"}))
+    actions = [
+        f"vault created at {vault}",
+        f"config saved to {CONFIG_PATH}",
+        f"CLAUDE.md {'registered' if registered else 'already registered'} at {CLAUDE_MD_PATH}",
+    ]
+    print(json.dumps({"status": "ok", "actions": actions}))
 
 
 def cmd_auto(args):

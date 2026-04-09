@@ -198,9 +198,7 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ## 🛠️ CLI Reference
 
 ```bash
-engram install                                  # Register in ~/.claude/CLAUDE.md
-engram uninstall                                # Remove from ~/.claude/CLAUDE.md
-engram init [PATH]                              # Initialize vault, save path to ~/.engram/config.json
+engram init [PATH]                              # Initialize vault + register in ~/.claude/CLAUDE.md
 engram auto [on|off|status]                     # Toggle auto-capture on session end
 engram status                                   # Vault statistics + hub entities + density
 engram query --question "..."                   # Search graph
@@ -211,6 +209,8 @@ engram community [--stdin]                      # Detect or save community summa
 engram abstract                                 # Gather data for pattern discovery
 engram save-pattern --stdin                     # Save discovered patterns
 engram context                                  # Compact summary for system prompt injection
+engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
+engram uninstall                                # Remove from ~/.claude/CLAUDE.md
 # All commands use the vault from last `engram init`. Override with --vault PATH.
 ```
 
