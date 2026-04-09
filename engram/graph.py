@@ -118,6 +118,10 @@ class MemoryGraph:
                         disk_graph.add_node(node, **attrs)
                     for u, v, attrs in self._graph.edges(data=True):
                         disk_graph.add_edge(u, v, **attrs)
+                    # Remove nodes deleted in-memory (e.g. by merge/prune)
+                    for node in list(disk_graph.nodes()):
+                        if node not in self._graph:
+                            disk_graph.remove_node(node)
                     self._graph = disk_graph
 
                 nx.write_graphml(self._graph, self.graph_path)

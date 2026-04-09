@@ -315,9 +315,7 @@ def _clear_queue(vault):
                 with open(qpath) as f:
                     q = json.load(f)
                 if q.get("status") == "pending":
-                    q["status"] = "processed"
-                    with open(qpath, "w") as f:
-                        json.dump(q, f)
+                    os.remove(qpath)
             except Exception:
                 pass
 
