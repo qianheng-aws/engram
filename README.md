@@ -202,12 +202,15 @@ engram init [PATH]                              # Initialize vault + register in
 engram auto [on|off|status]                     # Toggle auto-capture on session end
 engram status                                   # Vault statistics + hub entities + density
 engram query --question "..."                   # Search graph
-engram replay --stdin                           # Process extracted JSON (with 15-min dedup)
-engram integrate [--stdin]                      # Detect or execute merges
-engram prune [--stdin]                          # Score or execute archival
-engram community [--stdin]                      # Detect or save community summaries
+engram replay --stdin                           # Process extracted entity/relation JSON
+engram integrate                                # Detect duplicate entities
+echo '<json>' | engram integrate --stdin        # Execute merges
+engram prune                                    # Report decay scores
+echo '<json>' | engram prune --stdin            # Archive entities
+engram community                                # Detect knowledge clusters
+echo '<json>' | engram community --stdin        # Save community summaries
 engram abstract                                 # Gather data for pattern discovery
-engram save-pattern --stdin                     # Save discovered patterns
+echo '<json>' | engram save-pattern --stdin     # Save discovered patterns
 engram context                                  # Compact summary for system prompt injection
 engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
 engram uninstall                                # Remove from ~/.claude/CLAUDE.md

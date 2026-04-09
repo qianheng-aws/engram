@@ -963,16 +963,16 @@ def main():
     p.add_argument("--question", required=True, help="Question to search for")
 
     p = sub.add_parser("replay", help="Process CC-extracted entities/relations JSON from stdin")
-    p.add_argument("--stdin", action="store_true", required=True)
+    p.add_argument("--stdin", action="store_true", required=True, help="Read entity/relation JSON from stdin")
 
-    p = sub.add_parser("integrate", help="Detect duplicate entities or execute merges")
-    p.add_argument("--stdin", action="store_true", help="Pipe merge instructions")
+    p = sub.add_parser("integrate", help="Detect duplicates (no flag) or execute merges (--stdin)")
+    p.add_argument("--stdin", action="store_true", help="Read merge instructions JSON from stdin")
 
-    p = sub.add_parser("prune", help="Score entities by decay or execute archival")
-    p.add_argument("--stdin", action="store_true", help="Pipe archive instructions")
+    p = sub.add_parser("prune", help="Report decay scores (no flag) or archive entities (--stdin)")
+    p.add_argument("--stdin", action="store_true", help="Read archive list JSON from stdin")
 
-    p = sub.add_parser("community", help="Detect knowledge clusters or save community summaries")
-    p.add_argument("--stdin", action="store_true", help="Pipe community summaries")
+    p = sub.add_parser("community", help="Detect clusters (no flag) or save summaries (--stdin)")
+    p.add_argument("--stdin", action="store_true", help="Read community summaries JSON from stdin")
 
     p = sub.add_parser("abstract", help="Gather daily notes for behavioral pattern discovery")
 
