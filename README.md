@@ -81,7 +81,7 @@ pip install -e .
 engram init ~/.engram/vault
 
 # 3. Register as CC plugin
-claude plugin marketplace add /path/to/engram
+claude plugin marketplace add ./
 claude plugin install engram
 
 # 4. (Optional) Enable auto-capture on session end
