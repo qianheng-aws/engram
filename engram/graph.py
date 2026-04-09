@@ -361,6 +361,7 @@ class MemoryGraph:
 
         pagerank = nx.pagerank(G, weight="weight") if G.number_of_nodes() > 1 else {n: 1.0 for n in G.nodes()}
         max_pr = max(pagerank.values()) or 1.0
+        max_degree = max(G.degree(n) for n in G.nodes()) or 1
 
         results = []
         for name in G.nodes():
@@ -368,7 +369,7 @@ class MemoryGraph:
             degree = G.degree(name)
             pr = pagerank.get(name, 0)
             # Composite score: 50% degree-based + 50% PageRank-based
-            score = 0.5 * (degree / max(G.degree(n) for n in G.nodes()) if G.number_of_nodes() > 0 else 0) + 0.5 * (pr / max_pr)
+            score = 0.5 * (degree / max_degree) + 0.5 * (pr / max_pr)
             desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
             results.append({
                 "name": name,

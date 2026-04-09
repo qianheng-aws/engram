@@ -12,9 +12,17 @@ from datetime import datetime
 from pathlib import Path
 
 
-VAULT_DIR = Path.home() / ".engram" / "vault"
-QUEUE_DIR = VAULT_DIR / "_meta" / "queue"
-ENABLED_FLAG = VAULT_DIR / "_meta" / "hook-enabled"
+CONFIG_PATH = Path.home() / ".engram" / "config.json"
+FALLBACK_VAULT = Path.home() / ".engram" / "vault"
+
+
+def _get_vault():
+    """Load vault path from config, falling back to default."""
+    try:
+        with open(CONFIG_PATH) as f:
+            return Path(json.load(f).get("vault", str(FALLBACK_VAULT)))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return FALLBACK_VAULT
 
 
 def main():
@@ -22,8 +30,12 @@ def main():
     if event_type.lower() != "stop":
         return
 
+    vault_dir = _get_vault()
+    queue_dir = vault_dir / "_meta" / "queue"
+    enabled_flag = vault_dir / "_meta" / "hook-enabled"
+
     # Check kill switch
-    if not ENABLED_FLAG.exists():
+    if not enabled_flag.exists():
         return
 
     # Read hook payload from stdin
@@ -39,7 +51,7 @@ def main():
     if not last_message or len(last_message) < 50:
         return
 
-    QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    queue_dir.mkdir(parents=True, exist_ok=True)
 
     breadcrumb = {
         "session_id": session_id,
@@ -49,7 +61,7 @@ def main():
         "status": "pending",
     }
 
-    queue_file = QUEUE_DIR / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{session_id[:8]}.json"
+    queue_file = queue_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{session_id[:8]}.json"
     with open(queue_file, "w") as f:
         json.dump(breadcrumb, f, indent=2)
 

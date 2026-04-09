@@ -186,6 +186,20 @@ def test_god_nodes_fields():
         print("  ✅ god nodes have all expected fields")
 
 
+def test_god_nodes_single_isolated_node():
+    """god_nodes must not crash with a single node that has degree 0."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("LONELY", {"entity_type": "CONCEPT", "description": "no edges"})
+        gods = g.god_nodes()
+        assert len(gods) == 1
+        assert gods[0]["name"] == "LONELY"
+        assert gods[0]["degree"] == 0
+        assert gods[0]["score"] == 0.5  # 0 degree component + 1.0 pagerank component
+        print("  ✅ god nodes handles single isolated node (no ZeroDivisionError)")
+
+
 def test_god_nodes_empty_graph():
     with tempfile.TemporaryDirectory() as tmpdir:
         vault = _make_vault(tmpdir)
@@ -528,6 +542,62 @@ def test_description_uses_latest():
         print("  ✅ entity file uses latest description")
 
 
+# ── Test engram-hook config ───────────────────────────────
+
+def test_engram_hook_uses_config_vault():
+    """engram-hook should read vault path from config, not hardcode ~/.engram/vault."""
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-hook")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Set up a custom vault at a non-default path
+        custom_vault = os.path.join(tmpdir, "my-custom-vault")
+        meta_dir = os.path.join(custom_vault, "_meta")
+        os.makedirs(meta_dir)
+        # Enable hook
+        open(os.path.join(meta_dir, "hook-enabled"), "w").close()
+
+        # Write config pointing to custom vault
+        config_dir = os.path.join(tmpdir, ".engram")
+        os.makedirs(config_dir)
+        with open(os.path.join(config_dir, "config.json"), "w") as f:
+            json.dump({"vault": custom_vault}, f)
+
+        # Also create default vault path to ensure hook does NOT use it
+        default_vault = os.path.join(tmpdir, ".engram", "vault", "_meta")
+        os.makedirs(default_vault)
+        open(os.path.join(default_vault, "hook-enabled"), "w").close()
+
+        payload = json.dumps({
+            "session_id": "test-session-123",
+            "last_assistant_message": "This is a test message that is long enough to pass the 50 char minimum threshold for processing.",
+            "stop_reason": "user",
+        })
+
+        result = subprocess.run(
+            [sys.executable, hook_path, "Stop"],
+            input=payload, capture_output=True, text=True,
+            env={**os.environ, "HOME": tmpdir},
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        # Check: queue file should be in custom vault, NOT in default
+        custom_queue = os.path.join(custom_vault, "_meta", "queue")
+        default_queue = os.path.join(tmpdir, ".engram", "vault", "_meta", "queue")
+
+        custom_has_files = os.path.isdir(custom_queue) and len(os.listdir(custom_queue)) > 0
+        default_has_files = os.path.isdir(default_queue) and len(os.listdir(default_queue)) > 0
+
+        if default_has_files and not custom_has_files:
+            print("  ❌ BUG: engram-hook wrote to hardcoded default, not config vault")
+            assert False, "engram-hook ignores config.json, uses hardcoded vault path"
+        elif custom_has_files:
+            print("  ✅ engram-hook reads vault from config.json")
+        else:
+            # Might not have written if hook-enabled check failed
+            print("  ⚠️  engram-hook wrote to neither location (check hook-enabled flag)")
+            assert False, "Hook did not write queue file to either location"
+
+
 if __name__ == "__main__":
     print("Testing confidence tagging...")
     test_confidence_stored_on_entity()
@@ -539,6 +609,7 @@ if __name__ == "__main__":
     print("\nTesting god nodes...")
     test_god_nodes_ranking()
     test_god_nodes_fields()
+    test_god_nodes_single_isolated_node()
     test_god_nodes_empty_graph()
 
     print("\nTesting surprising connections...")
@@ -555,6 +626,7 @@ if __name__ == "__main__":
     test_pretool_hook_with_graph()
     test_pretool_hook_no_graph()
     test_pretool_hook_ignores_non_search()
+    test_engram_hook_uses_config_vault()
 
     print("\nTesting rich content...")
     test_markdown_description_preserved()
