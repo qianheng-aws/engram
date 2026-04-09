@@ -11,13 +11,20 @@ engram status```
 
 **2. Analyze this conversation** and extract entities + relations following these rules:
 
-### What TO extract (✅)
-- Projects, tools, concepts **worked on, debugged, designed, or decided about**
-- Bugs with root cause and fix
-- Design decisions with rationale
+### Extraction criteria
+Extract projects, tools, and concepts **worked on, debugged, designed, or decided about** — but only if they meet at least one:
+- **Design decision** — chose it, rejected it, or compared it with alternatives
+- **Bug/fix** — discovered or fixed a bug in it
+- **Built/modified** — implemented or changed its code
+- **Core architecture** — the project's design would be fundamentally different without it (not just "used it")
+
+Examples:
+- Session uses Python to write code → do NOT extract PYTHON
+- Compared Python vs Go as implementation language → extract both
+- Obsidian wikilinks/Dataview shaped engram's export format → extract OBSIDIAN
+- Used NetworkX for graph storage → extract only if discussed why NetworkX over alternatives
 
 ### What NOT to extract (❌)
-- Generic tech (PYTHON, LINUX, GIT, JSON) unless central to discussion
 - Transient actions (FILE_UPLOAD, VSCODE_RESTART)
 - The user themselves
 
@@ -65,7 +72,14 @@ JSON format:
   "relations": [{
     "source": "A", "target": "B",
     "description": "...", "weight": 0.8,
-    "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"
+    "confidence": "EXTRACTED|INFERRED|AMBIGUOUS",
+    "confidence_score": 0.75
+  }],
+  "hyperedges": [{
+    "id": "snake_case_id",
+    "label": "Human Readable Group Name",
+    "members": ["ENTITY_A", "ENTITY_B", "ENTITY_C"],
+    "relation": "form"
   }],
   "daily_summary": "One paragraph summary"
 }
@@ -75,3 +89,5 @@ Notes:
 - `description`: Use markdown. Include code blocks for key snippets, bullet lists for key points.
 - `references`: Optional. URLs from the session (GitHub repos, docs, issues, PRs) relevant to this entity.
 - `local_path`: Optional. Absolute path to local directory/file for this entity (repos, projects, data files). Skip for concepts/bugs without a local presence.
+- `confidence_score`: Optional. Numeric 0.0-1.0 on relations — how confident the relationship is. Use alongside string `confidence`.
+- `hyperedges`: Optional. Group 3+ entities that form a logical unit (e.g., "OODA Pipeline" grouping 5 stages, "Auth Stack" grouping 3 tools). Skip if no natural groupings exist.

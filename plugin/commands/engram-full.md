@@ -14,7 +14,7 @@ Review candidates and merge if needed.
 **3. Prune** — Check for decaying entities:
 ```bash
 engram prune```
-Review fading/archivable entities.
+Review fading/archivable entities. Also check `knowledge_gaps` from status — isolated nodes (degree 0) are strong prune candidates.
 
 **4. Community** — Detect and summarize knowledge clusters:
 ```bash
@@ -28,7 +28,7 @@ Community JSON: `{"communities": [{"id": 0, "title": "...", "summary": "...", "m
 **5. Abstract** — Discover behavioral patterns:
 ```bash
 engram abstract```
-Analyze the returned daily notes for recurring behaviors, decision preferences, and problem patterns. Output JSON and save:
+Analyze the returned daily notes for recurring behaviors, decision preferences, and problem patterns. Also review `suggested_questions` from status — bridge nodes often reveal cross-domain patterns. Output JSON and save:
 ```bash
 echo '<json>' | engram save-pattern --stdin
 ```
