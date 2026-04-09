@@ -80,9 +80,10 @@ pip install -e .
 # 2. Initialize vault
 engram init ~/.engram/vault
 
-# 3. Register as CC plugin
+# 3. Register in Claude Code
 claude plugin marketplace add .
 claude plugin install engram
+engram install                  # writes engram section to ~/.claude/CLAUDE.md
 
 # 4. (Optional) Enable auto-capture on session end
 engram auto on
@@ -198,6 +199,8 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ## 🛠️ CLI Reference
 
 ```bash
+engram install                                  # Register in ~/.claude/CLAUDE.md
+engram uninstall                                # Remove from ~/.claude/CLAUDE.md
 engram init [PATH]                              # Initialize vault, save path to ~/.engram/config.json
 engram auto [on|off|status]                     # Toggle auto-capture on session end
 engram status                                   # Vault statistics + hub entities + density

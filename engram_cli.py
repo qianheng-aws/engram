@@ -2,6 +2,8 @@
 """Engram CLI — called by CC /engram command.
 
 Usage:
+    engram install                              # register in ~/.claude/CLAUDE.md
+    engram uninstall                            # remove from ~/.claude/CLAUDE.md
     engram init [PATH]                         # init vault, save path to ~/.engram/config.json
     engram auto [on|off|status]                 # toggle auto-capture
     engram replay --stdin                       # process extracted JSON
@@ -30,6 +32,16 @@ from engram.graph import MemoryGraph
 CONFIG_PATH = os.path.expanduser("~/.engram/config.json")
 FALLBACK_VAULT = os.path.expanduser("~/.engram/vault")
 GRAPH_FIELD_SEP = "<SEP>"
+
+CLAUDE_MD_PATH = os.path.expanduser("~/.claude/CLAUDE.md")
+CLAUDE_MD_MARKER = "## engram"
+CLAUDE_MD_SECTION = """\
+## engram
+- Use `engram` to retrieve context from the user's personal knowledge graph when relevant
+- Query: `/engram-query <question>` to search the vault
+- Save: `/engram` to extract and persist entities/relations from the current session
+- Status: `/engram-status` to check current graph state
+"""
 
 
 def _load_vault_path():
@@ -68,6 +80,45 @@ def _git_sync(vault: str, message: str = "auto-sync"):
             subprocess.run(["git", "push"], cwd=vault, capture_output=True, timeout=30)
     except Exception:
         pass  # Never fail the engram because of git
+
+
+# ── install / uninstall ────────────────────────────────
+
+def cmd_install(args):
+    """Register engram in ~/.claude/CLAUDE.md so CC always knows about the knowledge graph."""
+    os.makedirs(os.path.dirname(CLAUDE_MD_PATH), exist_ok=True)
+    if os.path.exists(CLAUDE_MD_PATH):
+        with open(CLAUDE_MD_PATH, "r") as f:
+            content = f.read()
+        if CLAUDE_MD_MARKER in content:
+            print(json.dumps({"status": "ok", "message": "already registered in CLAUDE.md"}))
+            return
+        content = content.rstrip() + "\n\n" + CLAUDE_MD_SECTION
+    else:
+        content = CLAUDE_MD_SECTION
+    with open(CLAUDE_MD_PATH, "w") as f:
+        f.write(content)
+    print(json.dumps({"status": "ok", "path": CLAUDE_MD_PATH}))
+
+
+def cmd_uninstall(args):
+    """Remove engram section from ~/.claude/CLAUDE.md."""
+    if not os.path.exists(CLAUDE_MD_PATH):
+        print(json.dumps({"status": "ok", "message": "no CLAUDE.md found"}))
+        return
+    with open(CLAUDE_MD_PATH, "r") as f:
+        content = f.read()
+    if CLAUDE_MD_MARKER not in content:
+        print(json.dumps({"status": "ok", "message": "engram section not found in CLAUDE.md"}))
+        return
+    # Remove from marker to next ## heading or EOF
+    cleaned = re.sub(r"\n*## engram\n.*?(?=\n## |\Z)", "", content, flags=re.DOTALL).rstrip()
+    if cleaned:
+        with open(CLAUDE_MD_PATH, "w") as f:
+            f.write(cleaned + "\n")
+    else:
+        os.remove(CLAUDE_MD_PATH)
+    print(json.dumps({"status": "ok", "message": "engram section removed from CLAUDE.md"}))
 
 
 # ── init ───────────────────────────────────────────────
@@ -874,7 +925,7 @@ def cmd_status(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Engram CLI")
-    parser.add_argument("command", choices=["init", "auto", "replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query", "context"])
+    parser.add_argument("command", choices=["install", "uninstall", "init", "auto", "replay", "integrate", "prune", "community", "abstract", "save-pattern", "status", "query", "context"])
     parser.add_argument("init_path", nargs="?", default=None, help="Positional arg: vault path for init, on/off/status for auto")
     parser.add_argument("--vault", default=None)
     parser.add_argument("--stdin", action="store_true")
@@ -888,7 +939,8 @@ def main():
     if args.command == "auto":
         args.auto_action = args.init_path or "status"
 
-    {"init": cmd_init, "auto": cmd_auto, "replay": cmd_replay, "integrate": cmd_integrate,
+    {"install": cmd_install, "uninstall": cmd_uninstall,
+     "init": cmd_init, "auto": cmd_auto, "replay": cmd_replay, "integrate": cmd_integrate,
      "prune": cmd_prune, "community": cmd_community, "abstract": cmd_abstract,
      "save-pattern": cmd_save_pattern,
      "status": cmd_status, "query": cmd_query,
