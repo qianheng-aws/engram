@@ -153,9 +153,36 @@ class MemoryGraph:
         return re.sub(r'[<>:"/\\|?*]', "_", name)[:200] + ".md"
 
     def _export_entities(self):
+        from datetime import datetime as _dt
         entities_dir = os.path.join(self.vault_dir, "entities")
-        for node_id in self._graph.nodes():
-            attrs = self._graph.nodes[node_id]
+        G = self._graph
+
+        # Pre-compute bridge nodes (betweenness centrality > 0, top 20% of non-zero)
+        bridge_nodes = set()
+        if G.number_of_nodes() >= 3:
+            betweenness = nx.betweenness_centrality(G, weight="weight")
+            nonzero = sorted([bc for bc in betweenness.values() if bc > 0], reverse=True)
+            if nonzero:
+                threshold = nonzero[min(len(nonzero) - 1, len(nonzero) // 5)]
+                bridge_nodes = {n for n, bc in betweenness.items() if bc >= threshold}
+
+        # Pre-compute stale nodes (decay score < 0.3)
+        stale_nodes = set()
+        today = _dt.now()
+        for name in G.nodes():
+            last = G.nodes[name].get("last_updated", "")
+            try:
+                days_ago = (today - _dt.strptime(last, "%Y-%m-%d")).days
+            except (ValueError, TypeError):
+                days_ago = 365
+            degree = G.degree(name)
+            time_score = 0.5 ** (days_ago / 30)
+            conn_bonus = min(degree / 10, 1.0) * 0.3
+            if time_score + conn_bonus < 0.3:
+                stale_nodes.add(name)
+
+        for node_id in G.nodes():
+            attrs = G.nodes[node_id]
             entity_type = attrs.get("entity_type", "CONCEPT")
             folder = self.TYPE_FOLDER.get(entity_type.upper(), "concepts")
             dirpath = os.path.join(entities_dir, folder)
@@ -165,22 +192,28 @@ class MemoryGraph:
             # Use latest description (after SEP) if available, else first
             desc_parts = description.split(GRAPH_FIELD_SEP) if description else [""]
             full_desc = desc_parts[-1].strip() if desc_parts else ""
-            degree = self._graph.degree(node_id)
+            degree = G.degree(node_id)
 
             relations = []
             neighbor_types = set()
-            for neighbor in self._graph.neighbors(node_id):
-                edge = self._graph.edges[node_id, neighbor]
+            for neighbor in G.neighbors(node_id):
+                edge = G.edges[node_id, neighbor]
                 desc = (edge.get("description", "") or "").split(GRAPH_FIELD_SEP)[-1]
                 weight = float(edge.get("weight", 1))
                 relations.append((neighbor, desc, weight))
-                n_type = self._graph.nodes[neighbor].get("entity_type", "")
+                n_type = G.nodes[neighbor].get("entity_type", "")
                 if n_type:
                     neighbor_types.add(n_type.lower())
 
-            # Build tags: type hierarchy + neighbor type connections
+            # Build tags: type hierarchy + dynamic status
             type_lower = entity_type.lower()
             tags = [f"entity/{type_lower}"]
+            for nt in sorted(neighbor_types):
+                tags.append(f"has/{nt}")
+            if node_id in bridge_nodes:
+                tags.append("bridge")
+            if node_id in stale_nodes:
+                tags.append("stale")
 
             # Build aliases from underscore-separated name
             alias = node_id.replace("_", " ").title()
