@@ -542,6 +542,72 @@ def test_description_uses_latest():
         print("  ✅ entity file uses latest description")
 
 
+def test_local_path_in_entity_markdown():
+    """local_path should appear in frontmatter when set."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("MY_REPO", {
+            "entity_type": "PROJECT",
+            "description": "A local project",
+            "local_path": "/Volumes/workplace/my-repo",
+        })
+        g.save()
+
+        md_path = os.path.join(vault, "entities", "projects", "MY_REPO.md")
+        with open(md_path) as f:
+            content = f.read()
+        assert 'local_path: "/Volumes/workplace/my-repo"' in content
+        print("  ✅ local_path in entity frontmatter")
+
+
+def test_local_path_absent_when_empty():
+    """No local_path line in frontmatter when entity has no local path."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("REMOTE_THING", {
+            "entity_type": "CONCEPT",
+            "description": "No local path",
+        })
+        g.save()
+
+        md_path = os.path.join(vault, "entities", "concepts", "REMOTE_THING.md")
+        with open(md_path) as f:
+            content = f.read()
+        assert "local_path" not in content
+        print("  ✅ no local_path when empty")
+
+
+def test_cli_replay_local_path():
+    """engram replay should store local_path from input JSON."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+
+        payload = json.dumps({
+            "date": "2026-04-09",
+            "entities": [{
+                "name": "PATH_TEST",
+                "entity_type": "PROJECT",
+                "description": "Test with local path",
+                "confidence": "EXTRACTED",
+                "local_path": "/tmp/test-project",
+            }],
+            "relations": [],
+            "daily_summary": "Test",
+        })
+
+        result = subprocess.run(
+            [sys.executable, "-m", "engram_cli", "replay", "--vault", vault, "--stdin"],
+            input=payload, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        g = MemoryGraph(vault)
+        assert g.get_entity("PATH_TEST")["local_path"] == "/tmp/test-project"
+        print("  ✅ CLI replay stores local_path")
+
+
 # ── Test engram-hook config ───────────────────────────────
 
 def test_engram_hook_uses_config_vault():
@@ -634,5 +700,8 @@ if __name__ == "__main__":
     test_references_empty_no_section()
     test_cli_replay_references()
     test_description_uses_latest()
+    test_local_path_in_entity_markdown()
+    test_local_path_absent_when_empty()
+    test_cli_replay_local_path()
 
     print("\n🎉 All feature tests passed!")

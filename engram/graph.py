@@ -192,9 +192,14 @@ class MemoryGraph:
                     lines.append(f"  - \"{a}\"")
             created = attrs.get('source_id', '').replace('session-', '') or ''
             last_updated = attrs.get('last_updated', '')
-            lines += [
+            local_path = attrs.get("local_path", "")
+            date_lines = [
                 f"created: \"[[daily/{created}|{created}]]\"" if created else "created:",
                 f"last_updated: \"[[daily/{last_updated}|{last_updated}]]\"" if last_updated else "last_updated:",
+            ]
+            if local_path:
+                date_lines.append(f"local_path: \"{local_path}\"")
+            lines += date_lines + [
                 f"degree: {degree}",
                 f"cssclasses:",
                 f"  - entity",

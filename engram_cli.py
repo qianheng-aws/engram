@@ -245,6 +245,9 @@ def cmd_replay(args):
         refs = e.get("references", [])
         if refs:
             attrs["references"] = json.dumps(refs)
+        local_path = e.get("local_path", "")
+        if local_path:
+            attrs["local_path"] = local_path
         graph.upsert_entity(e["name"], attrs)
 
     for r in relations:
@@ -627,12 +630,16 @@ def cmd_query(args):
         attrs = graph.get_entity(name)
         neighbors = graph.get_neighbors(name)
         desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
+        local_path = attrs.get("local_path", "")
+        header = f"## {name}"
+        if local_path:
+            header += f"\n📁 `{local_path}`"
         neighbor_strs = []
         for n, d in neighbors[:8]:
             ndesc = (d.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:80]
             weight = d.get("weight", "?")
             neighbor_strs.append(f"  - [[{n}]]: {ndesc} (w:{weight})")
-        context_parts.append(f"## {name}\n{desc}\n### Relations\n" + "\n".join(neighbor_strs))
+        context_parts.append(f"{header}\n{desc}\n### Relations\n" + "\n".join(neighbor_strs))
 
     # 6. Load community context for matched entities
     community_context = []

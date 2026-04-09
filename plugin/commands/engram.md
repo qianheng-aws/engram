@@ -59,7 +59,8 @@ JSON format:
     "entity_type": "PROJECT|TOOL|CONCEPT|PERSON|ORGANIZATION",
     "description": "Markdown description with **bold**, `code`, bullet lists, code blocks",
     "confidence": "EXTRACTED|INFERRED|AMBIGUOUS",
-    "references": ["https://github.com/..."]
+    "references": ["https://github.com/..."],
+    "local_path": "/absolute/path/to/project"
   }],
   "relations": [{
     "source": "A", "target": "B",
@@ -73,3 +74,4 @@ JSON format:
 Notes:
 - `description`: Use markdown. Include code blocks for key snippets, bullet lists for key points.
 - `references`: Optional. URLs from the session (GitHub repos, docs, issues, PRs) relevant to this entity.
+- `local_path`: Optional. Absolute path to local directory/file for this entity (repos, projects, data files). Skip for concepts/bugs without a local presence.
