@@ -30,6 +30,13 @@ class MemoryGraph:
         else:
             self._graph = nx.Graph()
 
+        # Hyperedges: stored as JSON metadata (not as graph nodes)
+        self._hyperedge_path = os.path.join(self.meta_dir, "hyperedges.json")
+        self._hyperedges: list[dict] = []
+        if os.path.exists(self._hyperedge_path):
+            with open(self._hyperedge_path) as f:
+                self._hyperedges = json.load(f)
+
     @property
     def node_count(self) -> int:
         return self._graph.number_of_nodes()
@@ -127,6 +134,10 @@ class MemoryGraph:
                 nx.write_graphml(self._graph, self.graph_path)
                 self._export_entities()
                 self._export_relation_index()
+                # Save hyperedges
+                with open(self._hyperedge_path, "w") as f:
+                    json.dump(self._hyperedges, f, indent=2)
+                self._export_hyperedges()
             finally:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
 
@@ -483,6 +494,20 @@ class MemoryGraph:
 
         return candidates
 
+    def add_hyperedge(self, id: str, label: str, members: list[str], relation: str = "form"):
+        """Add or update a group relationship."""
+        members = [m.upper().strip() for m in members]
+        # Upsert by id
+        for i, h in enumerate(self._hyperedges):
+            if h["id"] == id:
+                self._hyperedges[i] = {"id": id, "label": label, "members": members, "relation": relation}
+                return
+        self._hyperedges.append({"id": id, "label": label, "members": members, "relation": relation})
+
+    def get_hyperedges(self) -> list[dict]:
+        """Return all hyperedges."""
+        return list(self._hyperedges)
+
     def _export_relation_index(self):
         rel_dir = os.path.join(self.vault_dir, "relations")
         os.makedirs(rel_dir, exist_ok=True)
@@ -509,3 +534,35 @@ class MemoryGraph:
 
         with open(os.path.join(rel_dir, "_index.md"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
+
+    def _export_hyperedges(self):
+        """Export hyperedges as MOC (Map of Content) files in groups/ folder."""
+        groups_dir = os.path.join(self.vault_dir, "groups")
+        os.makedirs(groups_dir, exist_ok=True)
+        for h in self._hyperedges:
+            lines = [
+                "---",
+                f"type: hyperedge",
+                f"relation: {h['relation']}",
+                f"members: {json.dumps(sorted(h['members']))}",
+                f"size: {len(h['members'])}",
+                f"tags:",
+                f"  - hyperedge",
+                f"  - group",
+                "---", "",
+                f"# {h['label']}", "",
+                f"This group connects {len(h['members'])} entities via **{h['relation']}** relationship.", "",
+                "## Members", "",
+            ]
+            for name in sorted(h["members"]):
+                entity_type = ""
+                if name in self._graph:
+                    entity_type = self._graph.nodes[name].get("entity_type", "")
+                type_badge = f" `{entity_type}`" if entity_type else ""
+                lines.append(f"- [[{name}]]{type_badge}")
+            lines.append("")
+
+            fname = re.sub(r'[<>:"/\\|?*]', "_", h["label"])[:200] + ".md"
+            path = os.path.join(groups_dir, fname)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")

@@ -783,6 +783,119 @@ def test_cli_context_suggested_questions():
         print("  ✅ CLI context includes suggested_questions")
 
 
+# ── Test hyperedges ──────────────────────────────────────
+
+def test_hyperedge_storage():
+    """Hyperedges stored in metadata and retrievable."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("STAGE_A", {"entity_type": "CONCEPT", "description": "First stage"})
+        g.upsert_entity("STAGE_B", {"entity_type": "CONCEPT", "description": "Second stage"})
+        g.upsert_entity("STAGE_C", {"entity_type": "CONCEPT", "description": "Third stage"})
+        g.add_hyperedge("pipeline", "Processing Pipeline", ["STAGE_A", "STAGE_B", "STAGE_C"], relation="form")
+        g.save()
+
+        # Reload and verify
+        g2 = MemoryGraph(vault)
+        hyperedges = g2.get_hyperedges()
+        assert len(hyperedges) == 1
+        h = hyperedges[0]
+        assert h["id"] == "pipeline"
+        assert h["label"] == "Processing Pipeline"
+        assert set(h["members"]) == {"STAGE_A", "STAGE_B", "STAGE_C"}
+        assert h["relation"] == "form"
+        print("  ✅ hyperedge: stored and retrieved")
+
+
+def test_hyperedge_obsidian_moc():
+    """Hyperedge export creates a MOC file in groups/ folder."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("STAGE_A", {"entity_type": "CONCEPT", "description": "First stage"})
+        g.upsert_entity("STAGE_B", {"entity_type": "CONCEPT", "description": "Second stage"})
+        g.add_hyperedge("my_group", "My Group", ["STAGE_A", "STAGE_B"], relation="form")
+        g.save()
+
+        moc_path = os.path.join(vault, "groups", "My Group.md")
+        assert os.path.exists(moc_path), f"MOC file not found at {moc_path}"
+        with open(moc_path) as f:
+            content = f.read()
+        assert "# My Group" in content
+        assert "[[STAGE_A]]" in content
+        assert "[[STAGE_B]]" in content
+        assert "hyperedge" in content
+        print("  ✅ hyperedge: MOC file exported to groups/")
+
+
+def test_hyperedge_empty():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        assert g.get_hyperedges() == []
+        print("  ✅ hyperedge: empty graph returns empty list")
+
+
+def test_hyperedge_dedup():
+    """Adding same hyperedge ID twice updates rather than duplicates."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("A", {"entity_type": "CONCEPT", "description": "a"})
+        g.upsert_entity("B", {"entity_type": "CONCEPT", "description": "b"})
+        g.upsert_entity("C", {"entity_type": "CONCEPT", "description": "c"})
+        g.add_hyperedge("grp", "Group V1", ["A", "B"], relation="form")
+        g.add_hyperedge("grp", "Group V2", ["A", "B", "C"], relation="form")
+        g.save()
+
+        g2 = MemoryGraph(vault)
+        hyperedges = g2.get_hyperedges()
+        assert len(hyperedges) == 1
+        assert hyperedges[0]["label"] == "Group V2"
+        assert set(hyperedges[0]["members"]) == {"A", "B", "C"}
+        print("  ✅ hyperedge: dedup by ID on upsert")
+
+
+def test_cli_replay_hyperedges():
+    """engram replay should accept and store hyperedges."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+
+        payload = json.dumps({
+            "date": "2026-04-09",
+            "entities": [
+                {"name": "STEP_1", "entity_type": "CONCEPT", "description": "Step one"},
+                {"name": "STEP_2", "entity_type": "CONCEPT", "description": "Step two"},
+            ],
+            "relations": [],
+            "hyperedges": [
+                {"id": "workflow", "label": "My Workflow", "members": ["STEP_1", "STEP_2"], "relation": "form"},
+            ],
+            "daily_summary": "Test with hyperedges",
+        })
+
+        result = subprocess.run(
+            [sys.executable, "-m", "engram_cli", "replay", "--vault", vault, "--stdin"],
+            input=payload, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        data = json.loads(result.stdout)
+        assert data["hyperedges_added"] == 1
+
+        # Verify stored
+        from engram.graph import MemoryGraph as MG
+        g = MG(vault)
+        hyperedges = g.get_hyperedges()
+        assert len(hyperedges) == 1
+        assert hyperedges[0]["label"] == "My Workflow"
+
+        # Verify MOC file
+        moc_path = os.path.join(vault, "groups", "My Workflow.md")
+        assert os.path.exists(moc_path)
+        print("  ✅ CLI replay stores hyperedges and creates MOC files")
+
+
 # ── Test enhanced status ─────────────────────────────────
 
 def test_cli_status_enhanced():

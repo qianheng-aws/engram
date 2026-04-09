@@ -257,6 +257,15 @@ def cmd_replay(args):
             "confidence": r.get("confidence", "EXTRACTED"),
         })
 
+    hyperedges = data.get("hyperedges", [])
+    for h in hyperedges:
+        graph.add_hyperedge(
+            id=h["id"],
+            label=h["label"],
+            members=h.get("members", []),
+            relation=h.get("relation", "form"),
+        )
+
     graph.save()
 
     # ── FIX: daily note dedup — replace same-date note instead of appending ──
@@ -365,6 +374,7 @@ def cmd_replay(args):
         "status": "ok",
         "entities_added": len(entities),
         "relations_added": len(relations),
+        "hyperedges_added": len(hyperedges),
         "total_nodes": graph.node_count,
         "total_edges": graph.edge_count,
         "daily_note": daily_path,
