@@ -80,10 +80,9 @@ pip install -e .
 # 2. Initialize vault
 engram init ~/.engram/vault
 
-# 3. Register in Claude Code
-claude plugin marketplace add .
+# 3. Register as CC plugin
+claude plugin marketplace add /path/to/engram
 claude plugin install engram
-engram install                  # writes engram section to ~/.claude/CLAUDE.md
 
 # 4. (Optional) Enable auto-capture on session end
 engram auto on
