@@ -519,18 +519,20 @@ class MemoryGraph:
             f"total_entities: {self.node_count}",
             "---", "",
             "# Relation Index", "",
-            "| Source | Target | Weight | Confidence | First Seen | Last Seen | Description |",
-            "|--------|--------|--------|------------|------------|-----------|-------------|",
+            "| Source | Target | Weight | Confidence | Score | First Seen | Last Seen | Description |",
+            "|--------|--------|--------|------------|-------|------------|-----------|-------------|",
         ]
         for u, v, data in sorted(self._graph.edges(data=True), key=lambda x: -float(x[2].get("weight", 0))):
             desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
             weight = float(data.get("weight", 1))
             confidence = data.get("confidence", "EXTRACTED")
+            conf_score = data.get("confidence_score", "")
+            conf_score_str = f"{float(conf_score):.2f}" if conf_score != "" else ""
             first_seen = data.get("first_seen", "")
             last_seen = data.get("last_seen", "")
             fs_link = f"[[daily/{first_seen}|{first_seen}]]" if first_seen else ""
             ls_link = f"[[daily/{last_seen}|{last_seen}]]" if last_seen else ""
-            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {confidence} | {fs_link} | {ls_link} | {desc} |")
+            lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {confidence} | {conf_score_str} | {fs_link} | {ls_link} | {desc} |")
 
         with open(os.path.join(rel_dir, "_index.md"), "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

@@ -251,11 +251,14 @@ def cmd_replay(args):
         graph.upsert_entity(e["name"], attrs)
 
     for r in relations:
-        graph.upsert_relation(r["source"], r["target"], {
+        attrs = {
             "description": r.get("description", ""),
             "weight": r.get("weight", 1.0),
             "confidence": r.get("confidence", "EXTRACTED"),
-        })
+        }
+        if "confidence_score" in r:
+            attrs["confidence_score"] = r["confidence_score"]
+        graph.upsert_relation(r["source"], r["target"], attrs)
 
     hyperedges = data.get("hyperedges", [])
     for h in hyperedges:

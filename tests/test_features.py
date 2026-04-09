@@ -918,6 +918,98 @@ def test_cli_status_enhanced():
         print("  ✅ CLI status includes full graph analysis")
 
 
+# ── Test edge confidence score ───────────────────────────
+
+def test_edge_confidence_score_stored():
+    """Relations store numeric confidence_score."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("X", {"entity_type": "CONCEPT", "description": "x"})
+        g.upsert_entity("Y", {"entity_type": "CONCEPT", "description": "y"})
+        g.upsert_relation("X", "Y", {
+            "description": "linked",
+            "weight": 1.0,
+            "confidence": "INFERRED",
+            "confidence_score": 0.75,
+        })
+        g.save()
+
+        g2 = MemoryGraph(vault)
+        neighbors = g2.get_neighbors("X")
+        edge = next(e for n, e in neighbors if n == "Y")
+        assert float(edge["confidence_score"]) == 0.75
+        print("  ✅ edge confidence_score stored and persisted")
+
+
+def test_edge_confidence_score_default():
+    """Edges without explicit confidence_score get no default (backward compat)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("A", {"entity_type": "CONCEPT", "description": "a"})
+        g.upsert_entity("B", {"entity_type": "CONCEPT", "description": "b"})
+        g.upsert_relation("A", "B", {"description": "linked", "weight": 1.0})
+        neighbors = g.get_neighbors("A")
+        edge = next(e for n, e in neighbors if n == "B")
+        assert "confidence_score" not in edge
+        print("  ✅ edge confidence_score absent when not provided")
+
+
+def test_edge_confidence_score_in_relation_index():
+    """Relation index should show confidence_score when present."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("P", {"entity_type": "CONCEPT", "description": "p"})
+        g.upsert_entity("Q", {"entity_type": "CONCEPT", "description": "q"})
+        g.upsert_relation("P", "Q", {
+            "description": "test",
+            "weight": 1.0,
+            "confidence": "INFERRED",
+            "confidence_score": 0.42,
+        })
+        g.save()
+
+        idx_path = os.path.join(vault, "relations", "_index.md")
+        with open(idx_path) as f:
+            content = f.read()
+        assert "Score" in content  # header column
+        assert "0.42" in content
+        print("  ✅ edge confidence_score in relation index")
+
+
+def test_cli_replay_confidence_score():
+    """engram replay should pass through confidence_score on relations."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+
+        payload = json.dumps({
+            "date": "2026-04-09",
+            "entities": [
+                {"name": "CS_A", "entity_type": "CONCEPT", "description": "a"},
+                {"name": "CS_B", "entity_type": "CONCEPT", "description": "b"},
+            ],
+            "relations": [
+                {"source": "CS_A", "target": "CS_B", "description": "linked",
+                 "weight": 0.8, "confidence": "INFERRED", "confidence_score": 0.65},
+            ],
+            "daily_summary": "Test confidence score",
+        })
+
+        result = subprocess.run(
+            [sys.executable, "-m", "engram_cli", "replay", "--vault", vault, "--stdin"],
+            input=payload, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        g = MemoryGraph(vault)
+        neighbors = g.get_neighbors("CS_A")
+        edge = next(e for n, e in neighbors if n == "CS_B")
+        assert float(edge["confidence_score"]) == 0.65
+        print("  ✅ CLI replay passes through confidence_score on edges")
+
+
 if __name__ == "__main__":
     print("Testing confidence tagging...")
     test_confidence_stored_on_entity()
