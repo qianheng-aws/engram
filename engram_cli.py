@@ -936,6 +936,11 @@ def cmd_status(args):
     # Knowledge gaps
     knowledge_gaps = graph.knowledge_gaps()
 
+    # Surprising connections + suggested questions
+    communities = graph.detect_communities(min_size=2)
+    surprising = graph.find_surprising_connections(communities)
+    suggested = graph.suggested_questions(top_n=5)
+
     print(json.dumps({
         "nodes": graph.node_count,
         "edges": graph.edge_count,
@@ -944,6 +949,8 @@ def cmd_status(args):
         "confidence_distribution": dict(conf_dist),
         "god_nodes": god_nodes,
         "knowledge_gaps": knowledge_gaps,
+        "surprising_connections": surprising,
+        "suggested_questions": suggested,
         "daily_notes": count_md("daily"),
         "patterns": count_md("patterns"),
         "communities": count_md("communities"),

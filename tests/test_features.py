@@ -783,6 +783,28 @@ def test_cli_context_suggested_questions():
         print("  ✅ CLI context includes suggested_questions")
 
 
+# ── Test enhanced status ─────────────────────────────────
+
+def test_cli_status_enhanced():
+    """engram status should include surprising_connections and suggested_questions."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _build_test_graph(vault)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "engram_cli", "status", "--vault", vault],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        data = json.loads(result.stdout)
+        assert "surprising_connections" in data
+        assert "suggested_questions" in data
+        assert "knowledge_gaps" in data
+        # With _build_test_graph there should be a cross-community edge
+        assert len(data["surprising_connections"]) > 0
+        print("  ✅ CLI status includes full graph analysis")
+
+
 if __name__ == "__main__":
     print("Testing confidence tagging...")
     test_confidence_stored_on_entity()
