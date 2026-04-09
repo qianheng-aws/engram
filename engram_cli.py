@@ -84,21 +84,28 @@ def _git_sync(vault: str, message: str = "auto-sync"):
 
 # ── install / uninstall ────────────────────────────────
 
-def cmd_install(args):
-    """Register engram in ~/.claude/CLAUDE.md so CC always knows about the knowledge graph."""
+def _register_claude_md():
+    """Write engram section to ~/.claude/CLAUDE.md. Returns True if written, False if already present."""
     os.makedirs(os.path.dirname(CLAUDE_MD_PATH), exist_ok=True)
     if os.path.exists(CLAUDE_MD_PATH):
         with open(CLAUDE_MD_PATH, "r") as f:
             content = f.read()
         if CLAUDE_MD_MARKER in content:
-            print(json.dumps({"status": "ok", "message": "already registered in CLAUDE.md"}))
-            return
+            return False
         content = content.rstrip() + "\n\n" + CLAUDE_MD_SECTION
     else:
         content = CLAUDE_MD_SECTION
     with open(CLAUDE_MD_PATH, "w") as f:
         f.write(content)
-    print(json.dumps({"status": "ok", "path": CLAUDE_MD_PATH}))
+    return True
+
+
+def cmd_install(args):
+    """Register engram in ~/.claude/CLAUDE.md so CC always knows about the knowledge graph."""
+    if _register_claude_md():
+        print(json.dumps({"status": "ok", "path": CLAUDE_MD_PATH}))
+    else:
+        print(json.dumps({"status": "ok", "message": "already registered in CLAUDE.md"}))
 
 
 def cmd_uninstall(args):
@@ -129,7 +136,8 @@ def cmd_init(args):
     vault = os.path.abspath(vault)
     os.makedirs(os.path.join(vault, "_meta"), exist_ok=True)
     _save_vault_path(vault)
-    print(json.dumps({"status": "ok", "vault": vault}))
+    registered = _register_claude_md()
+    print(json.dumps({"status": "ok", "vault": vault, "claude_md": "registered" if registered else "already registered"}))
 
 
 def cmd_auto(args):
