@@ -32,6 +32,7 @@ from engram.graph import MemoryGraph
 CONFIG_PATH = os.path.expanduser("~/.engram/config.json")
 FALLBACK_VAULT = os.path.expanduser("~/.engram/vault")
 GRAPH_FIELD_SEP = "<SEP>"
+ENTITY_WIKILINK_RE = re.compile(r'\[\[([A-Z][A-Z0-9_]+)\]\]')
 
 CLAUDE_MD_PATH = os.path.expanduser("~/.claude/CLAUDE.md")
 CLAUDE_MD_MARKER = "## engram"
@@ -283,7 +284,7 @@ def cmd_replay(args):
         with open(daily_path, "r") as f:
             content = f.read()
         # Parse existing entity refs
-        existing_entities = set(re.findall(r'\[\[([A-Z_]+)\]\]', content))
+        existing_entities = set(ENTITY_WIKILINK_RE.findall(content))
         # Keep existing summaries: extract bullet lines from ## Summary section
         if "## Summary" in content:
             idx = content.index("## Summary")
@@ -452,11 +453,7 @@ def cmd_integrate(args):
     }))
 
 
-_TYPE_FOLDER = {
-    "PERSON": "people", "CONCEPT": "concepts", "PROJECT": "projects",
-    "TOOL": "tools", "ORGANIZATION": "orgs", "ORG": "orgs",
-    "EVENT": "concepts", "LOCATION": "concepts",
-}
+_TYPE_FOLDER = MemoryGraph.TYPE_FOLDER
 
 
 def _remove_entity_md(vault: str, name: str, entity_type: str = "CONCEPT"):
@@ -666,7 +663,7 @@ def cmd_query(args):
             with open(fpath, "r") as f:
                 content = f.read()
             # Check if any matched entity is a member of this community
-            community_members = set(re.findall(r'\[\[([A-Z_]+)\]\]', content))
+            community_members = set(ENTITY_WIKILINK_RE.findall(content))
             if matched_set & community_members:
                 # Extract title and summary (skip frontmatter)
                 lines = content.split("\n")
@@ -951,20 +948,23 @@ def cmd_feedback(args):
     }, indent=2))
 
 
+def _iter_entity_files(vault):
+    """Yield (entity_name, path) for all markdown files under entities/."""
+    entities_dir = os.path.join(vault, "entities")
+    if not os.path.isdir(entities_dir):
+        return
+    for root, _, files in os.walk(entities_dir):
+        for fname in files:
+            if fname.endswith(".md"):
+                yield fname[:-3], os.path.join(root, fname)
+
+
 def _scan_feedback_callouts(vault):
     """Scan entity markdown files for [!correction], [!merge], [!delete] callouts."""
     callouts = []
-    entities_dir = os.path.join(vault, "entities")
-    if not os.path.isdir(entities_dir):
-        return callouts
 
     callout_re = re.compile(r'>\s*\[!(correction|merge|delete)\]\s*(.*)')
-    for root, _, files in os.walk(entities_dir):
-        for fname in files:
-            if not fname.endswith(".md"):
-                continue
-            path = os.path.join(root, fname)
-            entity_name = fname[:-3]  # strip .md
+    for entity_name, path in _iter_entity_files(vault):
             with open(path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
@@ -995,16 +995,8 @@ def _scan_feedback_callouts(vault):
 
 def _clear_feedback_callouts(vault):
     """Remove all [!correction], [!merge], [!delete] callouts from entity files."""
-    entities_dir = os.path.join(vault, "entities")
-    if not os.path.isdir(entities_dir):
-        return
-
     callout_re = re.compile(r'>\s*\[!(correction|merge|delete)\]\s*')
-    for root, _, files in os.walk(entities_dir):
-        for fname in files:
-            if not fname.endswith(".md"):
-                continue
-            path = os.path.join(root, fname)
+    for _name, path in _iter_entity_files(vault):
             with open(path, "r", encoding="utf-8") as f:
                 lines = f.readlines()
 
@@ -1028,6 +1020,109 @@ def _clear_feedback_callouts(vault):
             if changed:
                 with open(path, "w", encoding="utf-8") as f:
                     f.writelines(new_lines)
+
+
+# ── lint ───────────────────────────────────────────────
+
+def cmd_lint(args):
+    """Validate vault consistency: GraphML ↔ markdown sync, dead wikilinks, orphans, frontmatter."""
+    vault = args.vault
+    graph = MemoryGraph(vault)
+    G = graph._graph
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    details = {
+        "missing_markdown": [],
+        "orphan_markdown": [],
+        "dead_wikilinks": [],
+        "orphan_nodes": [],
+        "incomplete_frontmatter": [],
+    }
+
+    # ── Single pass over entity files: sync check + content cache ──
+    graph_nodes = set(G.nodes())
+    md_files = {}  # entity_name -> (path, content)
+    for name, fpath in _iter_entity_files(vault):
+        with open(fpath, "r", encoding="utf-8") as f:
+            md_files[name] = (fpath, f.read())
+
+    # ── Check 1: GraphML ↔ markdown sync ──
+    for node in graph_nodes:
+        if node not in md_files:
+            entity_type = G.nodes[node].get("entity_type", "CONCEPT")
+            folder = _TYPE_FOLDER.get(entity_type.upper(), "concepts")
+            expected = os.path.join("entities", folder, graph._safe_filename(node))
+            details["missing_markdown"].append({"node": node, "expected_path": expected})
+
+    for name, (path, _content) in md_files.items():
+        if name not in graph_nodes:
+            details["orphan_markdown"].append({"path": os.path.relpath(path, vault)})
+
+    # ── Check 2: Dead wikilinks ──
+    seen_links = set()
+
+    def _scan_wikilinks(rel_path, content):
+        content_clean = re.sub(r'```dataview.*?```', '', content, flags=re.DOTALL)
+        for target in ENTITY_WIKILINK_RE.findall(content_clean):
+            if target not in graph_nodes:
+                key = (rel_path, target)
+                if key not in seen_links:
+                    seen_links.add(key)
+                    details["dead_wikilinks"].append({"file": rel_path, "target": target})
+
+    # Scan cached entity files
+    for _name, (path, content) in md_files.items():
+        _scan_wikilinks(os.path.relpath(path, vault), content)
+
+    # Scan communities + groups (not cached)
+    for scan_dir in ("communities", "groups"):
+        dir_path = os.path.join(vault, scan_dir)
+        if not os.path.isdir(dir_path):
+            continue
+        for root, _, files in os.walk(dir_path):
+            for fname in files:
+                if not fname.endswith(".md"):
+                    continue
+                fpath = os.path.join(root, fname)
+                with open(fpath, "r", encoding="utf-8") as f:
+                    _scan_wikilinks(os.path.relpath(fpath, vault), f.read())
+
+    # ── Check 3: Orphan nodes (degree=0, not created today) ──
+    for node in graph_nodes:
+        if G.degree(node) == 0:
+            attrs = G.nodes[node]
+            last_updated = attrs.get("last_updated", "")
+            if last_updated != today:
+                details["orphan_nodes"].append({
+                    "name": node,
+                    "degree": 0,
+                    "last_updated": last_updated,
+                })
+
+    # ── Check 4: Frontmatter completeness (reuse cached content) ──
+    required_fields = {"entity_type", "confidence", "tags", "created"}
+    for name, (path, content) in md_files.items():
+        rel_path = os.path.relpath(path, vault)
+        if not content.startswith("---"):
+            details["incomplete_frontmatter"].append({"file": rel_path, "missing": sorted(required_fields)})
+            continue
+        end = content.find("---", 3)
+        if end == -1:
+            details["incomplete_frontmatter"].append({"file": rel_path, "missing": sorted(required_fields)})
+            continue
+        fm = content[3:end]
+        present = {line.split(":")[0].strip() for line in fm.split("\n") if line.strip()}
+        missing = required_fields - present
+        if missing:
+            details["incomplete_frontmatter"].append({"file": rel_path, "missing": sorted(missing)})
+
+    total_issues = sum(len(v) for v in details.values())
+    print(json.dumps({
+        "status": "ok",
+        "checks": 4,
+        "issues": total_issues,
+        "details": details,
+    }, indent=2))
 
 
 # ── status ──────────────────────────────────────────────
@@ -1153,6 +1248,8 @@ def main():
 
     p = sub.add_parser("context", help="Compact summary for system prompt injection")
 
+    p = sub.add_parser("lint", help="Validate vault consistency (GraphML vs markdown, dead links, orphans)")
+
     # Global option: all subparsers get --vault
     for name, sp in sub.choices.items():
         if name not in ("install", "uninstall"):
@@ -1172,7 +1269,7 @@ def main():
      "prune": cmd_prune, "community": cmd_community, "abstract": cmd_abstract,
      "save-pattern": cmd_save_pattern, "feedback": cmd_feedback,
      "status": cmd_status, "query": cmd_query,
-     "context": cmd_context}[args.command](args)
+     "context": cmd_context, "lint": cmd_lint}[args.command](args)
 
 
 if __name__ == "__main__":

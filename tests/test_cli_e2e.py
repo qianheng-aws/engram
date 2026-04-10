@@ -324,6 +324,106 @@ def test_query_no_match():
         print("  ✅ query: returns empty for no match")
 
 
+# ── lint ──────────────────────────────────────────────────
+
+def test_lint_clean():
+    """Lint on a healthy vault should report 0 issues."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)
+        result = _run(["lint"], vault)
+        assert result["status"] == "ok"
+        assert result["checks"] == 4
+        # All entities are connected and have markdown — only check no missing_markdown/orphan_markdown
+        assert len(result["details"]["missing_markdown"]) == 0
+        assert len(result["details"]["orphan_markdown"]) == 0
+        assert len(result["details"]["incomplete_frontmatter"]) == 0
+        print("  ✅ lint: clean vault passes")
+
+
+def test_lint_orphan_node():
+    """Lint detects degree-0 nodes not created today."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)
+        # Add an isolated entity with old date
+        from engram.graph import MemoryGraph
+        graph = MemoryGraph(vault)
+        graph.upsert_entity("ORPHAN_Z", {
+            "entity_type": "CONCEPT",
+            "description": "Isolated entity",
+            "confidence": "INFERRED",
+            "source_id": "session-2026-01-01",
+            "last_updated": "2026-01-01",
+        })
+        graph.save()
+        result = _run(["lint"], vault)
+        orphans = result["details"]["orphan_nodes"]
+        orphan_names = [o["name"] for o in orphans]
+        assert "ORPHAN_Z" in orphan_names
+        print("  ✅ lint: detects orphan nodes")
+
+
+def test_lint_orphan_markdown():
+    """Lint detects markdown files not backed by graph nodes."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)
+        # Create a stray markdown file
+        stray_dir = os.path.join(vault, "entities", "concepts")
+        os.makedirs(stray_dir, exist_ok=True)
+        with open(os.path.join(stray_dir, "GHOST_ENTITY.md"), "w") as f:
+            f.write("---\nentity_type: CONCEPT\n---\n# GHOST\n")
+        result = _run(["lint"], vault)
+        orphan_paths = [o["path"] for o in result["details"]["orphan_markdown"]]
+        assert any("GHOST_ENTITY" in p for p in orphan_paths)
+        print("  ✅ lint: detects orphan markdown files")
+
+
+def test_lint_dead_wikilinks():
+    """Lint detects wikilinks to non-existent entities."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)
+        # Inject a dead wikilink into an entity file
+        entity_dir = os.path.join(vault, "entities", "projects")
+        for fname in os.listdir(entity_dir):
+            if fname.startswith("PROJECT_A"):
+                fpath = os.path.join(entity_dir, fname)
+                with open(fpath, "a") as f:
+                    f.write("\nSee also [[NONEXISTENT_ENTITY]] for details.\n")
+                break
+        result = _run(["lint"], vault)
+        dead = result["details"]["dead_wikilinks"]
+        dead_targets = [d["target"] for d in dead]
+        assert "NONEXISTENT_ENTITY" in dead_targets
+        print("  ✅ lint: detects dead wikilinks")
+
+
+def test_lint_incomplete_frontmatter():
+    """Lint detects entity files with missing required frontmatter fields."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)
+        # Overwrite an entity file with incomplete frontmatter
+        broken_dir = os.path.join(vault, "entities", "concepts")
+        os.makedirs(broken_dir, exist_ok=True)
+        with open(os.path.join(broken_dir, "BUG_X.md"), "w") as f:
+            f.write("---\nentity_type: CONCEPT\n---\n# BUG_X\nMissing confidence, tags, created.\n")
+        result = _run(["lint"], vault)
+        incomplete = result["details"]["incomplete_frontmatter"]
+        broken_files = [i["file"] for i in incomplete]
+        assert any("BUG_X" in f for f in broken_files)
+        # Should be missing confidence, tags, created
+        for item in incomplete:
+            if "BUG_X" in item["file"]:
+                assert "confidence" in item["missing"]
+                assert "tags" in item["missing"]
+                assert "created" in item["missing"]
+                break
+        print("  ✅ lint: detects incomplete frontmatter")
+
+
 if __name__ == "__main__":
     print("Testing replay...")
     test_replay_basic()
@@ -356,5 +456,12 @@ if __name__ == "__main__":
     test_query_keyword_match()
     test_query_description_match()
     test_query_no_match()
+
+    print("\nTesting lint...")
+    test_lint_clean()
+    test_lint_orphan_node()
+    test_lint_orphan_markdown()
+    test_lint_dead_wikilinks()
+    test_lint_incomplete_frontmatter()
 
     print("\n🎉 All CLI e2e tests passed!")

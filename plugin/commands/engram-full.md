@@ -38,3 +38,8 @@ Analyze the returned daily notes for recurring behaviors, decision preferences, 
 echo '<json>' | engram save-pattern --stdin
 ```
 Pattern JSON: `{"new_patterns": [{"name": "...", "description": "...", "evidence": ["2026-04-06"], "confidence": 0.7}], "updated_patterns": []}`
+
+**7. Lint** — Validate vault consistency:
+```bash
+engram lint```
+Checks: GraphML ↔ markdown sync, dead wikilinks, orphan nodes (degree 0), frontmatter completeness. If issues > 0, review and fix before finishing.
