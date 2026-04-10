@@ -237,10 +237,13 @@ class MemoryGraph:
             created = attrs.get('source_id', '').replace('session-', '') or ''
             last_updated = attrs.get('last_updated', '')
             local_path = attrs.get("local_path", "")
+            url = attrs.get("url", "")
             date_lines = [
                 f"created: \"[[daily/{created}|{created}]]\"" if created else "created:",
                 f"last_updated: \"[[daily/{last_updated}|{last_updated}]]\"" if last_updated else "last_updated:",
             ]
+            if url:
+                date_lines.append(f"url: \"{url}\"")
             if local_path:
                 date_lines.append(f"local_path: \"{local_path}\"")
             lines += date_lines + [

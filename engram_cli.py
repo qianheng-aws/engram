@@ -249,6 +249,9 @@ def cmd_replay(args):
         local_path = e.get("local_path", "")
         if local_path:
             attrs["local_path"] = local_path
+        url = e.get("url", "")
+        if url:
+            attrs["url"] = url
         graph.upsert_entity(e["name"], attrs)
 
     for r in relations:
@@ -641,7 +644,10 @@ def cmd_query(args):
         neighbors = graph.get_neighbors(name)
         desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
         local_path = attrs.get("local_path", "")
+        url = attrs.get("url", "")
         header = f"## {name}"
+        if url:
+            header += f"\n🔗 {url}"
         if local_path:
             header += f"\n📁 `{local_path}`"
         neighbor_strs = []

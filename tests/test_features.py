@@ -608,6 +608,72 @@ def test_cli_replay_local_path():
         print("  ✅ CLI replay stores local_path")
 
 
+def test_url_in_entity_markdown():
+    """url should appear in frontmatter when set."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("MY_TOOL", {
+            "entity_type": "TOOL",
+            "description": "A tool with a homepage",
+            "url": "https://github.com/org/my-tool",
+        })
+        g.save()
+
+        md_path = os.path.join(vault, "entities", "tools", "MY_TOOL.md")
+        with open(md_path) as f:
+            content = f.read()
+        assert 'url: "https://github.com/org/my-tool"' in content
+        print("  ✅ url in entity frontmatter")
+
+
+def test_url_absent_when_empty():
+    """No url line in frontmatter when entity has no url."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        g = MemoryGraph(vault)
+        g.upsert_entity("NO_URL_THING", {
+            "entity_type": "CONCEPT",
+            "description": "No URL",
+        })
+        g.save()
+
+        md_path = os.path.join(vault, "entities", "concepts", "NO_URL_THING.md")
+        with open(md_path) as f:
+            content = f.read()
+        assert "url:" not in content
+        print("  ✅ no url when empty")
+
+
+def test_cli_replay_url():
+    """engram replay should store url from input JSON."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+
+        payload = json.dumps({
+            "date": "2026-04-09",
+            "entities": [{
+                "name": "URL_TEST",
+                "entity_type": "TOOL",
+                "description": "Test with url",
+                "confidence": "EXTRACTED",
+                "url": "https://example.com",
+            }],
+            "relations": [],
+            "daily_summary": "Test",
+        })
+
+        result = subprocess.run(
+            [sys.executable, "-m", "engram_cli", "replay", "--vault", vault, "--stdin"],
+            input=payload, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        g = MemoryGraph(vault)
+        assert g.get_entity("URL_TEST")["url"] == "https://example.com"
+        print("  ✅ CLI replay stores url")
+
+
 # ── Test engram-hook config ───────────────────────────────
 
 def test_engram_hook_uses_config_vault():
@@ -1049,6 +1115,9 @@ if __name__ == "__main__":
     test_local_path_in_entity_markdown()
     test_local_path_absent_when_empty()
     test_cli_replay_local_path()
+    test_url_in_entity_markdown()
+    test_url_absent_when_empty()
+    test_cli_replay_url()
 
     print("\nTesting knowledge gaps...")
     test_knowledge_gaps_isolated_nodes()

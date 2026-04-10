@@ -66,7 +66,8 @@ JSON format:
     "entity_type": "PROJECT|TOOL|CONCEPT|PERSON|ORGANIZATION",
     "description": "Markdown description with **bold**, `code`, bullet lists, code blocks",
     "confidence": "EXTRACTED|INFERRED|AMBIGUOUS",
-    "references": ["https://github.com/..."],
+    "url": "https://github.com/org/repo",
+    "references": ["https://github.com/org/repo/issues/42"],
     "local_path": "/absolute/path/to/project"
   }],
   "relations": [{
@@ -87,7 +88,8 @@ JSON format:
 
 Notes:
 - `description`: Use markdown. Include code blocks for key snippets, bullet lists for key points.
-- `references`: Optional. URLs from the session (GitHub repos, docs, issues, PRs) relevant to this entity.
+- `url`: Optional. The canonical URL that represents this entity — GitHub repo, official website, personal homepage, or wiki main page. Only for URLs that define the entity's identity, not just reference it.
+- `references`: Optional. Other URLs from the session (issues, PRs, docs, blog posts) relevant but not the entity's identity URL.
 - `local_path`: Optional. Absolute path to local directory/file for this entity (repos, projects, data files). Skip for concepts/bugs without a local presence.
 - `confidence_score`: Optional. Numeric 0.0-1.0 on relations — how confident the relationship is. Use alongside string `confidence`.
 - `hyperedges`: Optional. Group 3+ entities that form a logical unit (e.g., "OODA Pipeline" grouping 5 stages, "Auth Stack" grouping 3 tools). Skip if no natural groupings exist.
