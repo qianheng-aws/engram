@@ -52,7 +52,7 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 |:------|:-----|:----|
 | **🔍 Observe** | Capture session conversations | CC session JSONL parser |
 | **🧭 Orient** | Extract entities & relations | CC does entity extraction — no external API |
-| **🎯 Decide** | Consolidate memory | 5-stage: replay → integrate → prune → community → abstract |
+| **🎯 Decide** | Consolidate memory | 6-stage: replay → feedback → integrate → prune → community → abstract |
 | **⚡ Act** | Persist to vault | Obsidian markdown + NetworkX GraphML |
 
 ### Zero External Dependencies
@@ -93,9 +93,10 @@ engram auto on
 | Command | Description |
 |:--------|:------------|
 | `/engram` | Extract entities and relations from current session |
-| `/engram-full` | Full consolidation: replay → integrate → prune → community → abstract |
+| `/engram-full` | Full consolidation: replay → feedback → integrate → prune → community → abstract |
+| `/engram-feedback` | Process human corrections from Obsidian callouts |
 | `/engram-community` | Detect and summarize knowledge clusters (Louvain) |
-| `/engram-status` | Show vault statistics and pending sessions |
+| `/engram-status` | Show vault statistics, graph analysis, and pending sessions |
 | `/engram-query <question>` | Search knowledge graph (keyword + graph traversal) |
 | `/engram-on` | Enable auto-capture on session end |
 | `/engram-off` | Disable auto-capture |
@@ -104,22 +105,23 @@ engram auto on
 
 | | `/engram` | `/engram-full` |
 |:--|:---------|:--------------|
-| Stages | Replay only | All 4 stages |
+| Stages | Replay only | All 6 stages |
 | Speed | Fast (one extraction) | Slower (multi-step) |
 | When | Every session | Daily/weekly cleanup |
 
 ## 🌙 Consolidation Stages
 
 ```
-┌──────────┐    ┌───────────┐    ┌─────────┐    ┌───────────┐    ┌──────────┐
-│  Replay  │ →  │ Integrate │ →  │  Prune  │ →  │ Community │ →  │ Abstract │
-│          │    │           │    │         │    │           │    │          │
-│ Extract  │    │  Merge    │    │ Decay   │    │  Cluster  │    │ Discover │
-│ entities │    │  dupes    │    │ old     │    │  & label  │    │ patterns │
-└──────────┘    └───────────┘    └─────────┘    └───────────┘    └──────────┘
+┌──────────┐    ┌──────────┐    ┌───────────┐    ┌─────────┐    ┌───────────┐    ┌──────────┐
+│  Replay  │ →  │ Feedback │ →  │ Integrate │ →  │  Prune  │ →  │ Community │ →  │ Abstract │
+│          │    │          │    │           │    │         │    │           │    │          │
+│ Extract  │    │  Human   │    │  Merge    │    │ Decay   │    │  Cluster  │    │ Discover │
+│ entities │    │  review  │    │  dupes    │    │ old     │    │  & label  │    │ patterns │
+└──────────┘    └──────────┘    └───────────┘    └─────────┘    └───────────┘    └──────────┘
 ```
 
 - **Replay** — CC extracts entities/relations from session → writes to graph + daily note
+- **Feedback** — Scans entity files for `[!correction]`/`[!merge]`/`[!delete]` callouts left by the user in Obsidian → CC applies fixes
 - **Integrate** — Detects duplicate entities (token similarity) → CC decides merge
 - **Prune** — Scores entities by decay (30-day half-life) → archives stale ones
 - **Community** — Louvain clustering on the graph → CC titles and summarizes each cluster
@@ -149,6 +151,8 @@ Open the vault in [Obsidian](https://obsidian.md) to get an interactive knowledg
 │   ├── tools/                #   Libraries, frameworks
 │   └── orgs/                 #   Teams, companies
 ├── 📁 relations/             # Edge table with weights
+├── 📁 communities/           # Louvain cluster summaries
+├── 📁 groups/                # Hyperedge MOC (Map of Content) files
 ├── 📁 daily/                 # Session summaries by date
 ├── 📁 patterns/              # Discovered behavioral patterns
 └── 📁 _meta/                 # System data (GraphML, queue, lock)
@@ -211,6 +215,8 @@ engram community                                # Detect knowledge clusters
 echo '<json>' | engram community --stdin        # Save community summaries
 engram abstract                                 # Gather data for pattern discovery
 echo '<json>' | engram save-pattern --stdin     # Save discovered patterns
+engram feedback                                 # Scan entity files for correction callouts
+echo '<json>' | engram feedback --stdin         # Apply corrections/merges/deletes
 engram context                                  # Compact summary for system prompt injection
 engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
 engram uninstall                                # Remove from ~/.claude/CLAUDE.md
