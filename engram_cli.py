@@ -894,6 +894,142 @@ def cmd_context(args):
     }, indent=2))
 
 
+# ── feedback ───────────────────────────────────────────
+
+def cmd_feedback(args):
+    """Scan entity files for correction/merge/delete callouts, or apply fixes from stdin."""
+    vault = args.vault
+    graph = MemoryGraph(vault)
+
+    if args.stdin:
+        # Execute mode: apply CC's corrections
+        data = json.load(sys.stdin)
+        applied = []
+
+        for fix in data.get("corrections", []):
+            name = fix["entity"].upper().strip()
+            entity = graph.get_entity(name)
+            if not entity:
+                continue
+            if "description" in fix:
+                graph.upsert_entity(name, {"description": fix["description"]})
+            if "entity_type" in fix:
+                graph.upsert_entity(name, {"entity_type": fix["entity_type"]})
+            applied.append({"entity": name, "action": "corrected"})
+
+        for merge in data.get("merges", []):
+            canonical = merge["canonical"].upper().strip()
+            for alias in merge.get("aliases", []):
+                alias = alias.upper().strip()
+                _merge_entity(graph, canonical, alias)
+                _remove_entity_md(vault, alias, graph.get_entity(alias) and graph.get_entity(alias).get("entity_type", "CONCEPT") or "CONCEPT")
+                applied.append({"entity": alias, "action": f"merged into {canonical}"})
+
+        for name in data.get("deletes", []):
+            name = name.upper().strip()
+            if name in graph._graph:
+                _remove_entity_md(vault, name, graph.get_entity(name).get("entity_type", "CONCEPT"))
+                graph._graph.remove_node(name)
+                applied.append({"entity": name, "action": "deleted"})
+
+        graph.save()
+
+        # Remove processed callouts from entity files
+        _clear_feedback_callouts(vault)
+
+        _git_sync(vault, f"engram feedback: {len(applied)} actions applied")
+        print(json.dumps({"status": "ok", "applied": applied}))
+        return
+
+    # Report mode: scan for callouts
+    callouts = _scan_feedback_callouts(vault)
+    print(json.dumps({
+        "status": "ok",
+        "total": len(callouts),
+        "callouts": callouts,
+        "message": "Review callouts and pipe corrections: {\"corrections\": [...], \"merges\": [...], \"deletes\": [...]} | engram feedback --stdin",
+    }, indent=2))
+
+
+def _scan_feedback_callouts(vault):
+    """Scan entity markdown files for [!correction], [!merge], [!delete] callouts."""
+    callouts = []
+    entities_dir = os.path.join(vault, "entities")
+    if not os.path.isdir(entities_dir):
+        return callouts
+
+    callout_re = re.compile(r'>\s*\[!(correction|merge|delete)\]\s*(.*)')
+    for root, _, files in os.walk(entities_dir):
+        for fname in files:
+            if not fname.endswith(".md"):
+                continue
+            path = os.path.join(root, fname)
+            entity_name = fname[:-3]  # strip .md
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            i = 0
+            while i < len(lines):
+                m = callout_re.match(lines[i])
+                if m:
+                    callout_type = m.group(1)
+                    title = m.group(2).strip()
+                    # Collect body lines (continuation lines starting with >)
+                    body_lines = []
+                    i += 1
+                    while i < len(lines) and lines[i].startswith(">"):
+                        body_lines.append(lines[i].lstrip("> ").rstrip("\n"))
+                        i += 1
+                    body = "\n".join(body_lines).strip()
+                    callouts.append({
+                        "entity": entity_name,
+                        "type": callout_type,
+                        "title": title,
+                        "body": body,
+                    })
+                else:
+                    i += 1
+
+    return callouts
+
+
+def _clear_feedback_callouts(vault):
+    """Remove all [!correction], [!merge], [!delete] callouts from entity files."""
+    entities_dir = os.path.join(vault, "entities")
+    if not os.path.isdir(entities_dir):
+        return
+
+    callout_re = re.compile(r'>\s*\[!(correction|merge|delete)\]\s*')
+    for root, _, files in os.walk(entities_dir):
+        for fname in files:
+            if not fname.endswith(".md"):
+                continue
+            path = os.path.join(root, fname)
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            new_lines = []
+            i = 0
+            changed = False
+            while i < len(lines):
+                if callout_re.match(lines[i]):
+                    changed = True
+                    i += 1
+                    # Skip continuation lines
+                    while i < len(lines) and lines[i].startswith(">"):
+                        i += 1
+                    # Skip trailing blank lines after callout
+                    while i < len(lines) and lines[i].strip() == "":
+                        i += 1
+                else:
+                    new_lines.append(lines[i])
+                    i += 1
+
+            if changed:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.writelines(new_lines)
+
+
 # ── status ──────────────────────────────────────────────
 
 def cmd_status(args):
@@ -1012,6 +1148,9 @@ def main():
     p = sub.add_parser("save-pattern", help="Save CC-discovered behavioral patterns")
     p.add_argument("--stdin", action="store_true", required=True)
 
+    p = sub.add_parser("feedback", help="Scan for correction callouts (no flag) or apply fixes (--stdin)")
+    p.add_argument("--stdin", action="store_true", help="Read correction instructions JSON from stdin")
+
     p = sub.add_parser("context", help="Compact summary for system prompt injection")
 
     # Global option: all subparsers get --vault
@@ -1031,7 +1170,7 @@ def main():
     {"install": cmd_install, "uninstall": cmd_uninstall,
      "init": cmd_init, "auto": cmd_auto, "replay": cmd_replay, "integrate": cmd_integrate,
      "prune": cmd_prune, "community": cmd_community, "abstract": cmd_abstract,
-     "save-pattern": cmd_save_pattern,
+     "save-pattern": cmd_save_pattern, "feedback": cmd_feedback,
      "status": cmd_status, "query": cmd_query,
      "context": cmd_context}[args.command](args)
 

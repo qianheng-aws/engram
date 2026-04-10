@@ -1,22 +1,27 @@
 # Engram Full — Complete memory consolidation
 
-Run all five engram stages: replay, integrate, prune, community, abstract.
+Run all six engram stages: replay, feedback, integrate, prune, community, abstract.
 
 ## Steps
 
 **1. Replay** — Run `/engram` first (extract entities from current session).
 
-**2. Integrate** — Find duplicate entities:
+**2. Feedback** — Process human corrections:
+```bash
+engram feedback```
+If callouts exist, review and apply fixes. See `/engram-feedback` for details.
+
+**3. Integrate** — Find duplicate entities:
 ```bash
 engram integrate```
 Review candidates and merge if needed.
 
-**3. Prune** — Check for decaying entities:
+**4. Prune** — Check for decaying entities:
 ```bash
 engram prune```
 Review fading/archivable entities. Also check `knowledge_gaps` from status — isolated nodes (degree 0) are strong prune candidates.
 
-**4. Community** — Detect and summarize knowledge clusters:
+**5. Community** — Detect and summarize knowledge clusters:
 ```bash
 engram community```
 For each community, generate a title and summary. If `surprising_connections` exist, also generate a cross-community comparison entry with a structured comparison (table or matrix) of the connected entities. Then save:
@@ -25,7 +30,7 @@ echo '<json>' | engram community --stdin
 ```
 Community JSON: `{"communities": [{"id": 0, "title": "...", "summary": "...", "members": ["A", "B"]}]}`
 
-**5. Abstract** — Discover behavioral patterns:
+**6. Abstract** — Discover behavioral patterns:
 ```bash
 engram abstract```
 Analyze the returned daily notes for recurring behaviors, decision preferences, and problem patterns. Also review `suggested_questions` from status — bridge nodes often reveal cross-domain patterns. Output JSON and save:
