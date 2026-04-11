@@ -127,6 +127,24 @@ engram auto on
 - **Community** — Louvain clustering on the graph → CC titles and summarizes each cluster
 - **Abstract** — Analyzes daily notes → discovers behavioral patterns (e.g., "user always debugs by observe → hypothesize → verify")
 
+### Human Feedback (Obsidian)
+
+The Feedback stage processes corrections you leave directly in entity files. In Obsidian:
+
+1. Open any entity file (e.g., `entities/concepts/STDERR_PIPE_BLOCKING.md`)
+2. Press `Cmd+P` → type "callout" → select a callout type, then change the type to one of:
+
+```markdown
+> [!correction] More accurate description
+> Actually the buffer limit is 64KB, not 32KB
+
+> [!merge] Should be same as ASYNC_DRAIN_STDERR
+
+> [!delete] False extraction, not a real entity
+```
+
+3. Run `/engram-feedback` (or `/engram-full`) — CC reads the callouts, applies fixes, and removes them
+
 ## 🗂️ Vault Structure
 
 Open the vault in [Obsidian](https://obsidian.md) to get an interactive knowledge graph:
