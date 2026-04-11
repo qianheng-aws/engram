@@ -27,12 +27,13 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 
-from engram.graph import MemoryGraph
+from engram.graph import DESC_SNIPPET_LEN, MemoryGraph
 
-CONFIG_PATH = os.path.expanduser("~/.engram/config.json")
+CONFIG_PATH = os.environ.get("ENGRAM_CONFIG", os.path.expanduser("~/.engram/config.json"))
 FALLBACK_VAULT = os.path.expanduser("~/.engram/vault")
-GRAPH_FIELD_SEP = "<SEP>"
+GRAPH_FIELD_SEP = "<|ENGRAM_SEP|>"
 ENTITY_WIKILINK_RE = re.compile(r'\[\[([A-Z][A-Z0-9_]+)\]\]')
+MIN_TOKEN_LEN = 2
 
 CLAUDE_MD_PATH = os.path.expanduser("~/.claude/CLAUDE.md")
 CLAUDE_MD_MARKER = "## engram"
@@ -78,7 +79,10 @@ def _git_sync(vault: str, message: str = "auto-sync"):
         result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=vault, capture_output=True, timeout=5)
         if result.returncode != 0:  # has changes
             subprocess.run(["git", "commit", "-m", message], cwd=vault, capture_output=True, timeout=10)
-            subprocess.run(["git", "push"], cwd=vault, capture_output=True, timeout=30)
+            # Only push if a remote is configured
+            has_remote = subprocess.run(["git", "remote"], cwd=vault, capture_output=True, text=True, timeout=5)
+            if has_remote.stdout.strip():
+                subprocess.run(["git", "push"], cwd=vault, capture_output=True, timeout=30)
     except Exception:
         pass  # Never fail the engram because of git
 
@@ -364,7 +368,7 @@ def cmd_replay(args):
         e = next((x for x in entities if x["name"] == name), None)
         if e:
             etype = e.get('entity_type', '?')
-            lines.append(f"- [[{name}]] `{etype}` — {e.get('description', '')[:120]}")
+            lines.append(f"- [[{name}]] `{etype}` — {e.get('description', '')[:DESC_SNIPPET_LEN]}")
         else:
             lines.append(f"- [[{name}]]")
 
@@ -430,7 +434,7 @@ def cmd_integrate(args):
     token_map = defaultdict(set)
     for name in names:
         for token in name.split("_"):
-            if len(token) > 2:
+            if len(token) > MIN_TOKEN_LEN:
                 token_map[token].add(name)
 
     candidates = []
@@ -444,7 +448,7 @@ def cmd_integrate(args):
                 details = []
                 for n in group:
                     attrs = graph.get_entity(n)
-                    desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+                    desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
                     details.append({"name": n, "description": desc, "degree": graph._graph.degree(n)})
                 candidates.append(details)
 
@@ -604,7 +608,7 @@ def cmd_query(args):
     graph = MemoryGraph(args.vault)
     question = args.question
     names = graph.all_entity_names()
-    tokens = [re.sub(r'[^\w]', '', t).upper() for t in question.split() if len(t) > 2]
+    tokens = [re.sub(r'[^\w]', '', t).upper() for t in question.split() if len(t) > MIN_TOKEN_LEN]
     tokens = [t for t in tokens if t]  # remove empty after stripping
 
     # 1. Keyword match on entity names
@@ -652,7 +656,7 @@ def cmd_query(args):
             header += f"\n📁 `{local_path}`"
         neighbor_strs = []
         for n, d in neighbors[:8]:
-            ndesc = (d.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:80]
+            ndesc = (d.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
             weight = d.get("weight", "?")
             neighbor_strs.append(f"  - [[{n}]]: {ndesc} (w:{weight})")
         context_parts.append(f"{header}\n{desc}\n### Relations\n" + "\n".join(neighbor_strs))
@@ -836,7 +840,7 @@ def cmd_context(args):
         entity_lines = []
         for name, degree, attrs in entities_by_degree[:10]:
             etype = attrs.get("entity_type", "?")
-            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:100]
+            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
             entity_lines.append(f"- {name} ({etype}, {degree} connections): {desc}")
         parts.append("## Key Entities\n" + "\n".join(entity_lines))
 

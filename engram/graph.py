@@ -12,7 +12,8 @@ import re
 import networkx as nx
 
 
-GRAPH_FIELD_SEP = "<SEP>"
+GRAPH_FIELD_SEP = "<|ENGRAM_SEP|>"
+DESC_SNIPPET_LEN = 120
 
 
 class MemoryGraph:
@@ -314,7 +315,7 @@ class MemoryGraph:
             member_details = []
             for name in sorted(members):
                 attrs = dict(self._graph.nodes[name])
-                desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+                desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
                 member_details.append({
                     "name": name,
                     "entity_type": attrs.get("entity_type", "CONCEPT"),
@@ -325,7 +326,7 @@ class MemoryGraph:
             subgraph = self._graph.subgraph(members)
             internal_edges = []
             for u, v, data in subgraph.edges(data=True):
-                desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:80]
+                desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
                 internal_edges.append({
                     "source": u, "target": v,
                     "weight": float(data.get("weight", 1)),
@@ -367,7 +368,7 @@ class MemoryGraph:
             weight = float(data.get("weight", 1))
             min_size = min(community_sizes.get(cu, 1), community_sizes.get(cv, 1))
             surprise = weight / min_size
-            desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+            desc = (data.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
             cross_edges.append({
                 "source": u, "target": v,
                 "source_community": cu, "target_community": cv,
@@ -434,7 +435,7 @@ class MemoryGraph:
             pr = pagerank.get(name, 0)
             # Composite score: 50% degree-based + 50% PageRank-based
             score = 0.5 * (degree / max_degree) + 0.5 * (pr / max_pr)
-            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
             results.append({
                 "name": name,
                 "entity_type": attrs.get("entity_type", "CONCEPT"),
@@ -457,7 +458,7 @@ class MemoryGraph:
             degree = G.degree(name)
             if degree == 0:
                 attrs = dict(G.nodes[name])
-                desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+                desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
                 isolated.append({
                     "name": name,
                     "entity_type": attrs.get("entity_type", "CONCEPT"),
@@ -521,7 +522,7 @@ class MemoryGraph:
                 continue
 
             attrs = dict(G.nodes[name])
-            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:120]
+            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0][:DESC_SNIPPET_LEN]
             connected_communities = sorted(
                 [community_names.get(c, f"community-{c}") for c in neighbor_communities]
             )

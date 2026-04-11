@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-CONFIG_PATH = Path.home() / ".engram" / "config.json"
+CONFIG_PATH = Path(os.environ.get("ENGRAM_CONFIG", str(Path.home() / ".engram" / "config.json")))
 FALLBACK_VAULT = Path.home() / ".engram" / "vault"
 
 
