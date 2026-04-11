@@ -132,7 +132,7 @@ engram auto on
 The Feedback stage processes corrections you leave directly in entity files. In Obsidian:
 
 1. Open any entity file (e.g., `entities/concepts/STDERR_PIPE_BLOCKING.md`)
-2. Press `Cmd+P` → type "callout" → select a callout type, then change the type to one of:
+2. Add a callout — either `Cmd+P` → search "callout", or type the syntax directly:
 
 ```markdown
 > [!correction] More accurate description
