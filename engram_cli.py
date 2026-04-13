@@ -35,6 +35,17 @@ FALLBACK_VAULT = os.path.expanduser("~/.engram/vault")
 GRAPH_FIELD_SEP = "<|ENGRAM_SEP|>"
 ENTITY_WIKILINK_RE = re.compile(r'\[\[([A-Z][A-Z0-9_]+)\]\]')
 MIN_TOKEN_LEN = 2
+QUERY_STOP_WORDS = {
+    "WHAT", "WHEN", "WHERE", "WHICH", "WHO", "WHOM", "WHOSE",
+    "HOW", "WHY", "DOES", "DID", "WAS", "WERE", "WILL", "WOULD",
+    "CAN", "COULD", "SHALL", "SHOULD", "MAY", "MIGHT", "MUST",
+    "THE", "AND", "BUT", "FOR", "NOR", "NOT", "YET", "THAT",
+    "THIS", "THESE", "THOSE", "WITH", "FROM", "INTO", "ABOUT",
+    "HAVE", "HAS", "HAD", "BEEN", "BEING", "ARE", "ISN",
+    "THERE", "THEIR", "THEY", "THEM", "THEN", "THAN", "ALSO",
+    "JUST", "ONLY", "VERY", "SOME", "ANY", "ALL", "EACH",
+    "EVERY", "OTHER", "SUCH", "LIKE", "USED", "USING",
+}
 
 CLAUDE_MD_PATH = os.path.expanduser("~/.claude/CLAUDE.md")
 CLAUDE_MD_MARKER = "## engram"
@@ -703,7 +714,7 @@ def cmd_query(args):
     question = args.question
     names = graph.all_entity_names()
     tokens = [re.sub(r'[^\w]', '', t).upper() for t in question.split() if len(t) > MIN_TOKEN_LEN]
-    tokens = [t for t in tokens if t]  # remove empty after stripping
+    tokens = [t for t in tokens if t and t not in QUERY_STOP_WORDS]
 
     # 1. Keyword match on entity names
     matched = [n for n in names if any(tok in n for tok in tokens)]
