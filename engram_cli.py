@@ -743,16 +743,28 @@ def cmd_query(args):
             if any(p.search(desc) for p in tok_patterns):
                 matched.append(g["name"])
 
-    # 4. Multi-hop: expand 2 hops out from matched entities
-    hop1 = set()
-    for name in matched[:5]:
-        for neighbor, _ in graph.get_neighbors(name):
-            hop1.add(neighbor)
-    hop2 = set()
-    for name in hop1:
-        for neighbor, _ in graph.get_neighbors(name):
-            hop2.add(neighbor)
-    expanded = (hop1 | hop2) - set(matched)
+    # 4. Multi-hop: expand 3 hops out, track hop distance and max weight
+    matched_set = set(matched)
+    # {entity_name: (hop_distance, max_weight)}
+    expanded_info = {}
+    frontier = set(matched[:5])
+    visited = set(frontier)
+    for hop in range(1, 4):
+        next_frontier = set()
+        for name in frontier:
+            for neighbor, edge_data in graph.get_neighbors(name):
+                if neighbor in visited:
+                    continue
+                w = float(edge_data.get("weight", 0))
+                if neighbor in expanded_info:
+                    prev_hop, prev_w = expanded_info[neighbor]
+                    expanded_info[neighbor] = (prev_hop, max(prev_w, w))
+                else:
+                    expanded_info[neighbor] = (hop, w)
+                next_frontier.add(neighbor)
+        visited |= next_frontier
+        frontier = next_frontier
+    # expanded_ranked computed after community expansion (step 6)
 
     # 5. Build rich context
     context_parts = []
@@ -778,7 +790,6 @@ def cmd_query(args):
     community_context = []
     comm_dir = os.path.join(args.vault, "communities")
     if os.path.isdir(comm_dir):
-        matched_set = set(matched)
         for fname in os.listdir(comm_dir):
             if not fname.endswith(".md"):
                 continue
@@ -808,12 +819,22 @@ def cmd_query(args):
                 if title:
                     community_context.append(f"**Community: {title}**\n" + " ".join(summary_lines))
                     # Also expand with community members
-                    expanded |= community_members
+                    for member in community_members:
+                        if member not in matched_set and member not in expanded_info:
+                            expanded_info[member] = (0, 0)  # community member, no hop/weight
+
+    # Sort expanded: hop asc, weight desc, take top 30
+    for name in matched_set:
+        expanded_info.pop(name, None)
+    expanded_ranked = sorted(expanded_info.items(), key=lambda x: (x[1][0], -x[1][1]))[:30]
 
     print(json.dumps({
         "question": question,
         "matched_entities": matched[:10],
-        "expanded_entities": sorted(expanded)[:20],
+        "expanded_entities": [
+            {"name": name, "hops": hop, "max_weight": round(w, 2)}
+            for name, (hop, w) in expanded_ranked
+        ],
         "all_entities": names,
         "context": "\n\n".join(context_parts),
         "community_context": community_context,
