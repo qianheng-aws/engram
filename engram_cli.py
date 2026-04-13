@@ -716,17 +716,20 @@ def cmd_query(args):
     tokens = [re.sub(r'[^\w]', '', t).upper() for t in question.split() if len(t) > MIN_TOKEN_LEN]
     tokens = [t for t in tokens if t and t not in QUERY_STOP_WORDS]
 
-    # 1. Keyword match on entity names
+    # Precompile word-boundary patterns for description matching
+    tok_patterns = [re.compile(r'\b' + re.escape(t.lower()) + r'\b') for t in tokens]
+
+    # 1. Keyword match on entity names (substring OK — names are structured)
     matched = [n for n in names if any(tok in n for tok in tokens)]
 
-    # 2. Also match on descriptions
+    # 2. Also match on descriptions (word boundary to avoid partial matches)
     if len(matched) < 3:
         for n in names:
             if n in matched:
                 continue
             attrs = graph.get_entity(n)
             desc = (attrs.get("description", "") or "").lower()
-            if any(tok.lower() in desc for tok in tokens):
+            if any(p.search(desc) for p in tok_patterns):
                 matched.append(n)
             if len(matched) >= 10:
                 break
@@ -737,7 +740,7 @@ def cmd_query(args):
         for g in god:
             attrs = graph.get_entity(g["name"])
             desc = (attrs.get("description", "") or "").lower()
-            if any(tok.lower() in desc for tok in tokens):
+            if any(p.search(desc) for p in tok_patterns):
                 matched.append(g["name"])
 
     # 4. Multi-hop: expand to neighbors of matched entities
