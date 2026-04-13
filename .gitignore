@@ -4,3 +4,6 @@ __pycache__/
 venv/
 dist/
 build/
+.DS_Store
+graphify-out/
+docs/plans/
