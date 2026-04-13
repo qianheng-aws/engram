@@ -221,7 +221,7 @@ def _check_dedup(vault: str, data: dict, window_minutes: int = 15) -> bool:
 
 def cmd_replay(args):
     """Process CC-extracted entities/relations JSON from stdin."""
-    data = json.load(sys.stdin)
+    data = json.load(sys.stdin, strict=False)
     vault = args.vault
 
     # Dedup check: skip if same content was saved within 15 minutes
@@ -416,7 +416,7 @@ def cmd_integrate(args):
 
     if args.stdin:
         # Execute merge: {"merges": [{"canonical": "A", "aliases": ["B", "C"]}]}
-        data = json.load(sys.stdin)
+        data = json.load(sys.stdin, strict=False)
         merged = []
         for m in data.get("merges", []):
             canonical = m["canonical"].upper().strip()
@@ -509,7 +509,7 @@ def cmd_prune(args):
 
     if args.stdin:
         # Execute archive: {"archive": ["ENTITY_A", "ENTITY_B"]}
-        data = json.load(sys.stdin)
+        data = json.load(sys.stdin, strict=False)
         archived = []
         archive_dir = os.path.join(args.vault, "_meta", "archive")
         os.makedirs(archive_dir, exist_ok=True)
@@ -567,7 +567,7 @@ def cmd_community(args):
 
     if args.stdin:
         # Save community summaries: {"communities": [{"id": 0, "title": "...", "summary": "...", "members": ["A", "B"]}]}
-        data = json.load(sys.stdin)
+        data = json.load(sys.stdin, strict=False)
         # Clear old community files before writing new ones
         comm_dir = os.path.join(args.vault, "communities")
         if os.path.isdir(comm_dir):
@@ -742,7 +742,7 @@ def cmd_abstract(args):
 
 def cmd_save_pattern(args):
     """Save CC-generated patterns to vault."""
-    data = json.load(sys.stdin)
+    data = json.load(sys.stdin, strict=False)
     vault = args.vault
     pattern_dir = os.path.join(vault, "patterns")
     os.makedirs(pattern_dir, exist_ok=True)
@@ -910,7 +910,7 @@ def cmd_feedback(args):
 
     if args.stdin:
         # Execute mode: apply CC's corrections
-        data = json.load(sys.stdin)
+        data = json.load(sys.stdin, strict=False)
         applied = []
 
         for fix in data.get("corrections", []):
