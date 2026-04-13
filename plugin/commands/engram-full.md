@@ -44,8 +44,7 @@ Pattern JSON: `{"new_patterns": [{"name": "...", "description": "...", "evidence
 engram lint```
 Checks: GraphML ↔ markdown sync, dead wikilinks, orphan nodes (degree 0), frontmatter completeness. If issues > 0, review and fix before finishing.
 
-**8. Reset consolidation counter:**
+After all stages complete, reset the consolidation counter so the next reminder cycle starts fresh:
 ```bash
 engram consolidation --reset
 ```
-This resets the replay counter and records the current timestamp so the next consolidation reminder triggers after the configured thresholds.

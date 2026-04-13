@@ -52,7 +52,7 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 |:------|:-----|:----|
 | **🔍 Observe** | Capture session conversations | CC session JSONL parser |
 | **🧭 Orient** | Extract entities & relations | CC does entity extraction — no external API |
-| **🎯 Decide** | Consolidate memory | 6-stage: replay → feedback → integrate → prune → community → abstract |
+| **🎯 Decide** | Consolidate memory | 7-stage: replay → feedback → integrate → prune → community → abstract → lint |
 | **⚡ Act** | Persist to vault | Obsidian markdown + NetworkX GraphML |
 
 ### Zero External Dependencies
@@ -93,7 +93,7 @@ engram auto on
 | Command | Description |
 |:--------|:------------|
 | `/engram` | Extract entities and relations from current session |
-| `/engram-full` | Full consolidation: replay → feedback → integrate → prune → community → abstract |
+| `/engram-full` | Full consolidation: replay → feedback → integrate → prune → community → abstract → lint |
 | `/engram-feedback` | Process human corrections from Obsidian callouts |
 | `/engram-community` | Detect and summarize knowledge clusters (Louvain) |
 | `/engram-status` | Show vault statistics, graph analysis, and pending sessions |
@@ -105,19 +105,32 @@ engram auto on
 
 | | `/engram` | `/engram-full` |
 |:--|:---------|:--------------|
-| Stages | Replay only | All 6 stages |
+| Stages | Replay only | All 6 stages + lint |
 | Speed | Fast (one extraction) | Slower (multi-step) |
-| When | Every session | Daily/weekly cleanup |
+| When | Every session | Auto-triggered when needed |
+
+**Auto-consolidation:** After each `/engram`, the CLI tracks how many replays have occurred since the last full run. When thresholds are reached, `/engram` will remind you (tier 1) or automatically escalate to a full consolidation (tier 2). Thresholds are configurable in `~/.engram/config.json`:
+
+```json
+{
+  "consolidation": {
+    "remind_after_replays": 10,
+    "remind_after_days": 7,
+    "force_after_replays": 15,
+    "force_after_days": 14
+  }
+}
+```
 
 ## 🌙 Consolidation Stages
 
 ```
-┌──────────┐    ┌──────────┐    ┌───────────┐    ┌─────────┐    ┌───────────┐    ┌──────────┐
-│  Replay  │ →  │ Feedback │ →  │ Integrate │ →  │  Prune  │ →  │ Community │ →  │ Abstract │
-│          │    │          │    │           │    │         │    │           │    │          │
-│ Extract  │    │  Human   │    │  Merge    │    │ Decay   │    │  Cluster  │    │ Discover │
-│ entities │    │  review  │    │  dupes    │    │ old     │    │  & label  │    │ patterns │
-└──────────┘    └──────────┘    └───────────┘    └─────────┘    └───────────┘    └──────────┘
+┌──────────┐    ┌──────────┐    ┌───────────┐    ┌─────────┐    ┌───────────┐    ┌──────────┐    ┌────────┐
+│  Replay  │ →  │ Feedback │ →  │ Integrate │ →  │  Prune  │ →  │ Community │ →  │ Abstract │ →  │  Lint  │
+│          │    │          │    │           │    │         │    │           │    │          │    │        │
+│ Extract  │    │  Human   │    │  Merge    │    │ Decay   │    │  Cluster  │    │ Discover │    │ Verify │
+│ entities │    │  review  │    │  dupes    │    │ old     │    │  & label  │    │ patterns │    │ vault  │
+└──────────┘    └──────────┘    └───────────┘    └─────────┘    └───────────┘    └──────────┘    └────────┘
 ```
 
 - **Replay** — CC extracts entities/relations from session → writes to graph + daily note
@@ -126,6 +139,7 @@ engram auto on
 - **Prune** — Scores entities by decay (30-day half-life) → archives stale ones
 - **Community** — Louvain clustering on the graph → CC titles and summarizes each cluster
 - **Abstract** — Analyzes daily notes → discovers behavioral patterns (e.g., "user always debugs by observe → hypothesize → verify")
+- **Lint** — Validates vault consistency: GraphML ↔ markdown sync, dead wikilinks, orphan nodes, frontmatter completeness
 
 ### Human Feedback (Obsidian)
 
@@ -236,6 +250,9 @@ echo '<json>' | engram save-pattern --stdin     # Save discovered patterns
 engram feedback                                 # Scan entity files for correction callouts
 echo '<json>' | engram feedback --stdin         # Apply corrections/merges/deletes
 engram context                                  # Compact summary for system prompt injection
+engram lint                                     # Validate vault consistency
+engram consolidation                            # Show consolidation tracking state
+engram consolidation --reset                    # Reset counter (after full consolidation)
 engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
 engram uninstall                                # Remove from ~/.claude/CLAUDE.md
 # All commands use the vault from last `engram init`. Override with --vault PATH.
