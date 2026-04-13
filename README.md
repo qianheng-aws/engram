@@ -69,7 +69,7 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 - Python 3.10+
 
-### Setup
+### From PyPI
 
 ```bash
 pip install engram-echo
@@ -77,17 +77,7 @@ claude plugin marketplace add https://github.com/qianheng-aws/engram.git
 claude plugin install engram@engram-echo
 ```
 
-That's it. Vault, config, and CLAUDE.md prompt all auto-initialize on first use.
-
-<details>
-<summary>Options</summary>
-
-- `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
-- `engram auto on` — auto-capture sessions on exit
-</details>
-
-<details>
-<summary>Development install (from source)</summary>
+### From source
 
 ```bash
 git clone https://github.com/qianheng-aws/engram.git
@@ -96,7 +86,12 @@ pip install -e .
 claude plugin marketplace add ./
 claude plugin install engram@engram-echo
 ```
-</details>
+
+Vault, config, and CLAUDE.md prompt all auto-initialize on first use.
+
+Optional:
+- `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
+- `engram auto on` — auto-capture sessions on exit
 
 ## 🎮 Commands
 
