@@ -6,7 +6,11 @@
     "plugins": [
         {
             "name": "engram",
-            "source": ".."
+            "source": {
+                "source": "git-subdir",
+                "url": "https://github.com/qianheng-aws/engram.git",
+                "path": "plugin"
+            }
         }
     ]
 }
