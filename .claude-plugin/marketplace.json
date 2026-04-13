@@ -1,16 +1,17 @@
 {
-  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "engram",
-  "description": "Persistent memory for Claude Code",
-  "owner": {
-    "name": "qianheng"
-  },
-  "plugins": [
-    {
-      "name": "engram",
-      "description": "Persistent memory — extract knowledge from sessions into an Obsidian vault knowledge graph",
-      "source": "./plugin",
-      "category": "productivity"
-    }
-  ]
+    "name": "engram-echo",
+    "owner": {
+        "name": "qianheng"
+    },
+    "plugins": [
+        {
+            "name": "engram",
+            "description": "Persistent memory — extract knowledge from sessions into an Obsidian vault knowledge graph",
+            "source": {
+                "source": "git-subdir",
+                "url": "https://github.com/qianheng-aws/engram.git",
+                "path": "plugin"
+            }
+        }
+    ]
 }

@@ -72,20 +72,16 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 ### Setup
 
 ```bash
-# 1. Install
 pip install engram-echo
-
-# 2. Register as CC plugin
-engram install          # prints the commands below — copy and run them
-claude plugin marketplace add <plugin-path>
-claude plugin install engram
-
-# 3. (Optional) Custom vault path — defaults to ~/.engram/vault
-engram init ~/my-vault
-
-# 4. (Optional) Enable auto-capture on session end
-engram auto on
+claude plugin marketplace add qianheng-aws/engram
+claude plugin install engram@engram-echo
 ```
+
+That's it. Vault auto-creates at `~/.engram/vault` on first use.
+
+Optional:
+- `engram init ~/custom-vault` — use a custom vault path
+- `engram auto on` — enable auto-capture on session end
 
 <details>
 <summary>Development install (from source)</summary>
@@ -94,8 +90,8 @@ engram auto on
 git clone https://github.com/qianheng-aws/engram.git
 cd engram
 pip install -e .
-claude plugin marketplace add ./plugin
-claude plugin install engram
+claude plugin marketplace add ./
+claude plugin install engram@engram-echo
 ```
 </details>
 
