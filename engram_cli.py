@@ -189,11 +189,15 @@ def _register_claude_md():
 
 
 def cmd_install(args):
-    """Register engram in ~/.claude/CLAUDE.md so CC always knows about the knowledge graph."""
-    if _register_claude_md():
-        print(json.dumps({"status": "ok", "path": CLAUDE_MD_PATH}))
-    else:
-        print(json.dumps({"status": "ok", "message": "already registered in CLAUDE.md"}))
+    """Register engram in ~/.claude/CLAUDE.md and print plugin path for CC plugin install."""
+    registered = _register_claude_md()
+    plugin_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin")
+    print(json.dumps({
+        "status": "ok",
+        "claude_md": "registered" if registered else "already registered",
+        "plugin_path": plugin_dir,
+        "next_step": f"claude plugin install {plugin_dir}",
+    }))
 
 
 def cmd_uninstall(args):

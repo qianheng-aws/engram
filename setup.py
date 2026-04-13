@@ -5,7 +5,7 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="engram-echo",
-    version="0.1.0",
+    version="0.1.1",
     description="Persistent memory for Claude Code — knowledge graph in Obsidian vault",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -19,6 +19,14 @@ setup(
     install_requires=["networkx"],
     entry_points={"console_scripts": ["engram=engram_cli:main"]},
     include_package_data=True,
+    package_data={
+        "plugin": [
+            ".claude-plugin/*.json",
+            "bin/*",
+            "commands/*.md",
+            "hooks/*.json",
+        ],
+    },
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
