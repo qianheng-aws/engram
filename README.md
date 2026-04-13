@@ -76,7 +76,9 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 pip install engram-echo
 
 # 2. Register as CC plugin
-engram install          # prints the claude plugin install command — copy and run it
+engram install          # prints the commands below — copy and run them
+claude plugin marketplace add <plugin-path>
+claude plugin install engram
 
 # 3. (Optional) Custom vault path — defaults to ~/.engram/vault
 engram init ~/my-vault
@@ -92,7 +94,8 @@ engram auto on
 git clone https://github.com/qianheng-aws/engram.git
 cd engram
 pip install -e .
-claude plugin install ./plugin
+claude plugin marketplace add ./plugin
+claude plugin install engram
 ```
 </details>
 

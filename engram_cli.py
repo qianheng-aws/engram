@@ -189,12 +189,13 @@ def _register_claude_md():
 
 
 def cmd_install(args):
-    """Register engram in ~/.claude/CLAUDE.md and print plugin path for CC plugin install."""
+    """Register engram in ~/.claude/CLAUDE.md and print plugin install commands."""
     registered = _register_claude_md()
     plugin_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin")
     print(f"CLAUDE.md: {'registered' if registered else 'already registered'}")
-    print(f"\nRun this to register the CC plugin:\n")
-    print(f"  claude plugin install {plugin_dir}")
+    print(f"\nRun these to register the CC plugin:\n")
+    print(f"  claude plugin marketplace add {plugin_dir}")
+    print(f"  claude plugin install engram")
 
 
 def cmd_uninstall(args):
