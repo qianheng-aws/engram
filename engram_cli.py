@@ -743,11 +743,16 @@ def cmd_query(args):
             if any(p.search(desc) for p in tok_patterns):
                 matched.append(g["name"])
 
-    # 4. Multi-hop: expand to neighbors of matched entities
-    expanded = set(matched)
+    # 4. Multi-hop: expand 2 hops out from matched entities
+    hop1 = set()
     for name in matched[:5]:
         for neighbor, _ in graph.get_neighbors(name):
-            expanded.add(neighbor)
+            hop1.add(neighbor)
+    hop2 = set()
+    for name in hop1:
+        for neighbor, _ in graph.get_neighbors(name):
+            hop2.add(neighbor)
+    expanded = (hop1 | hop2) - set(matched)
 
     # 5. Build rich context
     context_parts = []
@@ -808,7 +813,7 @@ def cmd_query(args):
     print(json.dumps({
         "question": question,
         "matched_entities": matched[:10],
-        "expanded_entities": sorted(expanded - set(matched))[:10],
+        "expanded_entities": sorted(expanded)[:20],
         "all_entities": names,
         "context": "\n\n".join(context_parts),
         "community_context": community_context,
