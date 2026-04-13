@@ -575,8 +575,8 @@ class MemoryGraph:
             conf_score_str = f"{float(conf_score):.2f}" if conf_score != "" else ""
             first_seen = data.get("first_seen", "")
             last_seen = data.get("last_seen", "")
-            fs_link = f"[[daily/{first_seen}|{first_seen}]]" if first_seen else ""
-            ls_link = f"[[daily/{last_seen}|{last_seen}]]" if last_seen else ""
+            fs_link = f"[[daily/{first_seen}]]" if first_seen else ""
+            ls_link = f"[[daily/{last_seen}]]" if last_seen else ""
             lines.append(f"| [[{u}]] | [[{v}]] | {weight:.1f} | {confidence} | {conf_score_str} | {fs_link} | {ls_link} | {desc} |")
 
         with open(os.path.join(rel_dir, "_index.md"), "w", encoding="utf-8") as f:
