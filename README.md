@@ -73,15 +73,18 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 
 ```bash
 pip install engram-echo
-claude plugin marketplace add qianheng-aws/engram
+claude plugin marketplace add https://github.com/qianheng-aws/engram.git
 claude plugin install engram@engram-echo
 ```
 
-That's it. Vault auto-creates at `~/.engram/vault` on first use.
+That's it. Vault, config, and CLAUDE.md prompt all auto-initialize on first use.
 
-Optional:
-- `engram init ~/custom-vault` — use a custom vault path
-- `engram auto on` — enable auto-capture on session end
+<details>
+<summary>Options</summary>
+
+- `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
+- `engram auto on` — auto-capture sessions on exit
+</details>
 
 <details>
 <summary>Development install (from source)</summary>
