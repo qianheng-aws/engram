@@ -93,3 +93,14 @@ Notes:
 - `local_path`: Optional. Absolute path to local directory/file for this entity (repos, projects, data files). Skip for concepts/bugs without a local presence.
 - `confidence_score`: Optional. Numeric 0.0-1.0 on relations — how confident the relationship is. Use alongside string `confidence`.
 - `hyperedges`: Optional. Group 3+ entities that form a logical unit (e.g., "OODA Pipeline" grouping 5 stages, "Auth Stack" grouping 3 tools). Skip if no natural groupings exist.
+
+**4. Check consolidation signal:**
+
+The replay output includes a `consolidation` field. React based on `tier`:
+
+- **tier 0** — no action needed.
+- **tier 1 (remind)** — Tell the user: "⚠️ Knowledge graph needs consolidation ({replay_count} replays, {days_since_full} days since last full run). Run `/engram-full` when you have a moment."
+- **tier 2 (force)** — Tell the user: "🔄 Auto-running full consolidation ({replay_count} replays, {days_since_full} days overdue)." Then **automatically continue** with the remaining `/engram-full` stages (feedback → integrate → prune → community → abstract → lint). After all stages complete, reset the counter:
+  ```bash
+  engram consolidation --reset
+  ```

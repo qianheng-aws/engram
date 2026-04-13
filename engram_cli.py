@@ -14,6 +14,7 @@ Usage:
     engram save-pattern --stdin                 # save discovered patterns
     engram status                               # vault statistics
     engram query --question "..."               # search graph
+    engram consolidation [--reset]              # show/reset consolidation tracking
     All commands accept optional --vault PATH to override the saved default.
 """
 
@@ -67,6 +68,81 @@ def _save_vault_path(vault: str):
     config["vault"] = os.path.abspath(vault)
     with open(CONFIG_PATH, "w") as f:
         json.dump(config, f, indent=2)
+
+
+CONSOLIDATION_DEFAULTS = {
+    "remind_after_replays": 10,
+    "remind_after_days": 7,
+    "force_after_replays": 15,
+    "force_after_days": 14,
+}
+
+
+def _load_consolidation_config():
+    """Load consolidation thresholds from config, with defaults."""
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f).get("consolidation", {})
+        return {k: cfg.get(k, v) for k, v in CONSOLIDATION_DEFAULTS.items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return dict(CONSOLIDATION_DEFAULTS)
+
+
+def _consolidation_state_path(vault):
+    return os.path.join(vault, "_meta", "consolidation.json")
+
+
+def _read_consolidation_state(vault):
+    path = _consolidation_state_path(vault)
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"last_full_timestamp": None, "replay_count": 0}
+
+
+def _write_consolidation_state(vault, state):
+    path = _consolidation_state_path(vault)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def _increment_replay_and_check(vault):
+    """Increment replay counter and return (tier, details)."""
+    state = _read_consolidation_state(vault)
+    state["replay_count"] = state.get("replay_count", 0) + 1
+    _write_consolidation_state(vault, state)
+
+    cfg = _load_consolidation_config()
+    replays = state["replay_count"]
+    last_full = state.get("last_full_timestamp")
+
+    days_since = None
+    if last_full:
+        try:
+            last_dt = datetime.fromisoformat(last_full)
+            days_since = (datetime.now() - last_dt).days
+        except (ValueError, TypeError):
+            pass
+
+    details = {
+        "replay_count": replays,
+        "days_since_full": days_since,
+        "thresholds": cfg,
+    }
+
+    if replays >= cfg["force_after_replays"] or (
+        days_since is not None and days_since >= cfg["force_after_days"]
+    ):
+        return 2, details
+
+    if replays >= cfg["remind_after_replays"] or (
+        days_since is not None and days_since >= cfg["remind_after_days"]
+    ):
+        return 1, details
+
+    return 0, details
 
 
 def _git_sync(vault: str, message: str = "auto-sync"):
@@ -381,7 +457,10 @@ def cmd_replay(args):
     # Sync vault to git
     _git_sync(vault, f"engram replay {date}: +{len(entities)} entities, +{len(relations)} relations")
 
-    print(json.dumps({
+    # Track consolidation state
+    tier, consolidation_details = _increment_replay_and_check(vault)
+
+    result = {
         "status": "ok",
         "entities_added": len(entities),
         "relations_added": len(relations),
@@ -389,7 +468,12 @@ def cmd_replay(args):
         "total_nodes": graph.node_count,
         "total_edges": graph.edge_count,
         "daily_note": daily_path,
-    }))
+        "consolidation": {
+            "tier": tier,
+            **consolidation_details,
+        },
+    }
+    print(json.dumps(result))
 
 
 def _clear_queue(vault):
@@ -1215,6 +1299,38 @@ def cmd_status(args):
     }, indent=2))
 
 
+# ── consolidation ─────────────────────────────────────────
+
+def cmd_consolidation(args):
+    """Show or reset consolidation tracking state."""
+    vault = args.vault
+    if args.reset:
+        state = {
+            "last_full_timestamp": datetime.now().isoformat(),
+            "replay_count": 0,
+        }
+        _write_consolidation_state(vault, state)
+        print(json.dumps({"status": "ok", "action": "reset", "state": state}))
+    else:
+        state = _read_consolidation_state(vault)
+        cfg = _load_consolidation_config()
+        tier, details = 0, {}
+        replays = state.get("replay_count", 0)
+        last_full = state.get("last_full_timestamp")
+        days_since = None
+        if last_full:
+            try:
+                days_since = (datetime.now() - datetime.fromisoformat(last_full)).days
+            except (ValueError, TypeError):
+                pass
+        details = {"replay_count": replays, "days_since_full": days_since, "thresholds": cfg}
+        if replays >= cfg["force_after_replays"] or (days_since is not None and days_since >= cfg["force_after_days"]):
+            tier = 2
+        elif replays >= cfg["remind_after_replays"] or (days_since is not None and days_since >= cfg["remind_after_days"]):
+            tier = 1
+        print(json.dumps({"status": "ok", "tier": tier, **details}, indent=2))
+
+
 # ── main ────────────────────────────────────────────────
 
 def main():
@@ -1260,6 +1376,9 @@ def main():
 
     p = sub.add_parser("lint", help="Validate vault consistency (GraphML vs markdown, dead links, orphans)")
 
+    p = sub.add_parser("consolidation", help="Show or reset consolidation tracking state")
+    p.add_argument("--reset", action="store_true", help="Reset counter (run after full consolidation)")
+
     # Global option: all subparsers get --vault
     for name, sp in sub.choices.items():
         if name not in ("install", "uninstall"):
@@ -1279,7 +1398,8 @@ def main():
      "prune": cmd_prune, "community": cmd_community, "abstract": cmd_abstract,
      "save-pattern": cmd_save_pattern, "feedback": cmd_feedback,
      "status": cmd_status, "query": cmd_query,
-     "context": cmd_context, "lint": cmd_lint}[args.command](args)
+     "context": cmd_context, "lint": cmd_lint,
+     "consolidation": cmd_consolidation}[args.command](args)
 
 
 if __name__ == "__main__":
