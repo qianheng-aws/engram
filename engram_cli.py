@@ -60,6 +60,7 @@ def _load_vault_path():
         # Auto-init: create default vault so `engram init` is optional
         os.makedirs(os.path.join(FALLBACK_VAULT, "_meta"), exist_ok=True)
         _save_vault_path(FALLBACK_VAULT)
+        _register_claude_md()
         return FALLBACK_VAULT
 
 
