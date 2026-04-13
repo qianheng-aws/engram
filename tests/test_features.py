@@ -345,45 +345,45 @@ def test_pretool_hook_with_graph():
         with open(config_path, "w") as f:
             json.dump({"vault": vault}, f)
 
-        payload = json.dumps({"tool_name": "Grep"})
-
-        # Patch CONFIG_PATH via env — we'll modify the script to check this
-        # For now, test the script directly by checking it's executable and parses
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "HOME": tmpdir},  # Trick: ~/.engram/vault -> tmpdir/.engram/vault
-        )
-        # With HOME overridden, config won't be found, but we set up the vault at tmpdir/.engram/vault
-        # Let's set that up properly
+        # Set up vault at ~/.engram/vault (via HOME override)
         alt_vault = os.path.join(tmpdir, ".engram", "vault")
         os.makedirs(os.path.join(alt_vault, "_meta"), exist_ok=True)
         _build_test_graph_at(alt_vault)
 
-        # Write config
         alt_config = os.path.join(tmpdir, ".engram", "config.json")
         with open(alt_config, "w") as f:
             json.dump({"vault": alt_vault}, f)
+
+        # Grep for "stderr" should match STDERR_PIPE_BLOCKING entity
+        payload = json.dumps({"tool_name": "Grep", "tool_input": {"pattern": "stderr_pipe"}})
 
         result = subprocess.run(
             [sys.executable, hook_path],
             input=payload, capture_output=True, text=True,
             env={**os.environ, "HOME": tmpdir},
         )
-        if result.stdout.strip():
-            data = json.loads(result.stdout)
-            assert "message" in data
-            assert "engram" in data["message"]
-            print("  ✅ PreToolUse hook outputs graph reminder")
-        else:
-            # Hook ran without error, graph message is optional
-            print("  ✅ PreToolUse hook runs without error")
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert "message" in data
+        assert "STDERR_PIPE_BLOCKING" in data["message"]
+        print("  ✅ PreToolUse hook injects matching entity context")
+
+        # Grep with no matching tokens should be silent
+        payload_nomatch = json.dumps({"tool_name": "Grep", "tool_input": {"pattern": "unrelated_thing"}})
+        result_nomatch = subprocess.run(
+            [sys.executable, hook_path],
+            input=payload_nomatch, capture_output=True, text=True,
+            env={**os.environ, "HOME": tmpdir},
+        )
+        assert result_nomatch.returncode == 0
+        assert result_nomatch.stdout.strip() == ""
+        print("  ✅ PreToolUse hook silent on non-matching pattern")
 
 
 def _build_test_graph_at(vault):
     """Build a minimal graph at the given vault path."""
     g = MemoryGraph(vault)
-    g.upsert_entity("TEST", {"entity_type": "CONCEPT", "description": "test"})
+    g.upsert_entity("STDERR_PIPE_BLOCKING", {"entity_type": "CONCEPT", "description": "Bug where stderr fills 64KB buffer"})
     g.save()
 
 

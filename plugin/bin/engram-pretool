@@ -1,18 +1,33 @@
 #!/usr/bin/env python3
 """Engram PreToolUse hook — fires before Grep/Glob/Read.
 
-If a knowledge graph exists, outputs a reminder to check the graph first.
-Uses only Python stdlib — no external dependencies.
+When the current tool operation relates to entities in the knowledge graph,
+automatically injects relevant context from prior sessions. Silent when
+no match is found.
 """
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 
 CONFIG_PATH = Path(os.environ.get("ENGRAM_CONFIG", str(Path.home() / ".engram" / "config.json")))
 FALLBACK_VAULT = Path.home() / ".engram" / "vault"
+GRAPH_FIELD_SEP = "<|ENGRAM_SEP|>"
+MIN_TOKEN_LEN = 4
+MAX_MATCHES = 3
+DESC_LIMIT = 200
+
+# Common tokens that match too broadly
+STOP_TOKENS = {
+    "SELF", "THIS", "THAT", "NONE", "TRUE", "FALSE", "NULL",
+    "FROM", "IMPORT", "CLASS", "RETURN", "ASYNC", "AWAIT",
+    "WITH", "OPEN", "FILE", "PATH", "LINE", "TYPE", "NAME",
+    "DATA", "ARGS", "FUNC", "MAIN", "TEST", "INIT", "LIST",
+    "DICT", "PRINT", "INPUT", "VALUE", "ERROR", "INDEX",
+}
 
 
 def get_vault():
@@ -23,6 +38,41 @@ def get_vault():
         return FALLBACK_VAULT
 
 
+def extract_tokens(tool_name, tool_input):
+    """Extract meaningful search tokens from tool input."""
+    if tool_name == "Grep":
+        raw = tool_input.get("pattern", "")
+    elif tool_name == "Read":
+        raw = tool_input.get("file_path", "")
+        raw = os.path.splitext(os.path.basename(raw))[0]
+    elif tool_name == "Glob":
+        raw = tool_input.get("pattern", "")
+        raw = os.path.splitext(os.path.basename(raw))[0]
+    else:
+        return set()
+
+    tokens = re.split(r'[^a-zA-Z0-9]+', raw)
+    tokens = {t.upper() for t in tokens if len(t) >= MIN_TOKEN_LEN}
+    return tokens - STOP_TOKENS
+
+
+def match_entities(tokens, entity_names):
+    """Match tokens against entity name words (full word match only).
+
+    Ranks by number of matching words so more specific hits come first.
+    """
+    if not tokens:
+        return []
+    scored = []
+    for name in entity_names:
+        name_words = set(name.split('_'))
+        overlap = len(tokens & name_words)
+        if overlap:
+            scored.append((overlap, name))
+    scored.sort(key=lambda x: -x[0])
+    return [name for _, name in scored[:MAX_MATCHES]]
+
+
 def main():
     vault = get_vault()
     graph_path = vault / "_meta" / "graph.graphml"
@@ -30,30 +80,66 @@ def main():
     if not graph_path.exists():
         return
 
-    # Read hook payload from stdin
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return
 
     tool_name = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input", {})
+
     if tool_name not in ("Grep", "Glob", "Read"):
         return
 
-    # Count graph nodes for context
-    node_count = 0
+    tokens = extract_tokens(tool_name, tool_input)
+    if not tokens:
+        return
+
+    # Fast path: parse entity names from GraphML with stdlib only
     try:
         import xml.etree.ElementTree as ET
         tree = ET.parse(graph_path)
-        node_count = len(tree.findall(".//{http://graphml.graphdml.org/xmlns}node"))
+        ns = "{http://graphml.graphdrawing.org/xmlns}"
+        entity_names = [n.get("id", "") for n in tree.findall(f".//{ns}node")]
     except Exception:
-        pass
+        return
 
-    # Output reminder as hook message
-    print(json.dumps({
-        "message": f"engram: Knowledge graph has {node_count} entities. "
-                   f"Consider `engram query --question \"...\"` before raw search.",
-    }))
+    matched = match_entities(tokens, entity_names)
+    if not matched:
+        return
+
+    # Match found — load full graph for rich context
+    try:
+        from engram.graph import MemoryGraph
+        graph = MemoryGraph(str(vault))
+
+        parts = []
+        for name in matched:
+            attrs = graph.get_entity(name)
+            if not attrs:
+                continue
+            desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
+            etype = attrs.get("entity_type", "?")
+            local_path = attrs.get("local_path", "")
+            url = attrs.get("url", "")
+            neighbors = graph.get_neighbors(name)
+            neighbor_names = [n for n, _ in neighbors[:5]]
+
+            entry = f"**{name}** ({etype})"
+            if url:
+                entry += f" {url}"
+            if local_path:
+                entry += f" `{local_path}`"
+            entry += f": {desc[:DESC_LIMIT]}"
+            if neighbor_names:
+                entry += f" [-> {', '.join(neighbor_names)}]"
+            parts.append(entry)
+
+        if parts:
+            msg = "engram: Related knowledge from prior sessions:\n" + "\n".join(f"- {p}" for p in parts)
+            print(json.dumps({"message": msg}))
+    except Exception:
+        return
 
 
 if __name__ == "__main__":
