@@ -48,11 +48,18 @@ CLAUDE_MD_SECTION = """\
 
 
 def _load_vault_path():
-    """Load vault path from config, falling back to default."""
+    """Load vault path from config, falling back to default.
+
+    Auto-creates the default vault directory if neither config nor vault exists,
+    so users can skip `engram init` for the default path.
+    """
     try:
         with open(CONFIG_PATH) as f:
             return json.load(f).get("vault", FALLBACK_VAULT)
     except (FileNotFoundError, json.JSONDecodeError):
+        # Auto-init: create default vault so `engram init` is optional
+        os.makedirs(os.path.join(FALLBACK_VAULT, "_meta"), exist_ok=True)
+        _save_vault_path(FALLBACK_VAULT)
         return FALLBACK_VAULT
 
 

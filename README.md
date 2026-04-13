@@ -67,26 +67,34 @@ Built on the **OODA loop** — the same decision framework used by fighter pilot
 ### Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
-- Python 3.10+ with `networkx`: `pip install networkx`
+- Python 3.10+
 
 ### Setup
 
 ```bash
-# 1. Clone and install
-git clone https://github.com/qianheng-aws/engram.git
-cd engram
-pip install -e .
+# 1. Install
+pip install engram-echo
 
-# 2. Initialize vault
-engram init ~/.engram/vault
+# 2. Register as CC plugin
+claude plugin install /path/to/engram/plugin
 
-# 3. Register as CC plugin
-claude plugin marketplace add ./
-claude plugin install engram
+# 3. (Optional) Custom vault path — defaults to ~/.engram/vault
+engram init ~/my-vault
 
 # 4. (Optional) Enable auto-capture on session end
 engram auto on
 ```
+
+<details>
+<summary>Development install (from source)</summary>
+
+```bash
+git clone https://github.com/qianheng-aws/engram.git
+cd engram
+pip install -e .
+claude plugin install ./plugin
+```
+</details>
 
 ## 🎮 Commands
 
