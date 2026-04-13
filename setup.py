@@ -5,7 +5,7 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="engram-echo",
-    version="0.1.1",
+    version="0.1.2",
     description="Persistent memory for Claude Code — knowledge graph in Obsidian vault",
     long_description=long_description,
     long_description_content_type="text/markdown",
