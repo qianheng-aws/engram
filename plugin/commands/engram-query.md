@@ -2,10 +2,12 @@
 
 $ARGUMENTS
 
-The knowledge graph stores all content in English. If the user's question is in another language, translate it to English before passing to the CLI. Reply to the user in their original language.
+The knowledge graph stores all content in English. Extract only the key terms from the user's question — drop stop words, question words, and filler. Translate non-English terms to English. Reply to the user in their original language.
+
+Example: "what is the starship prompt renderer?" → `engram query --question "starship prompt renderer"`
 
 ```bash
-engram query --question "<english question>"
+engram query --question "<english keywords>"
 ```
 
 The query engine uses keyword match + multi-hop graph traversal. Use the returned `context` to answer the question.
