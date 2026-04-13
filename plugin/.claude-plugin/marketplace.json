@@ -1,8 +1,12 @@
 {
+    "name": "engram-echo",
+    "owner": {
+        "name": "qianheng"
+    },
     "plugins": [
         {
             "name": "engram",
-            "path": ".."
+            "source": ".."
         }
     ]
 }
