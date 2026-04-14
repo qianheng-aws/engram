@@ -316,6 +316,42 @@ def _check_dedup(vault: str, data: dict, window_minutes: int = 15) -> bool:
     return False
 
 
+def _build_evidence_maps(evidence_items, date):
+    """Build entity/relation → evidence ref mappings from evidence items.
+
+    Returns (ev_by_block_id, entity_evidence_map, relation_evidence_map).
+    - ev_by_block_id: {block_id: {"content": ..., "entities": [...], "relations": [...]}}
+    - entity_evidence_map: {ENTITY_NAME: [wikilink_ref, ...]}
+    - relation_evidence_map: {(SRC, TGT): [wikilink_ref, ...]}
+    """
+    ev_by_block_id = {}
+    entity_evidence_map = defaultdict(list)
+    relation_evidence_map = defaultdict(list)
+
+    for ev in evidence_items:
+        content = ev.get("content", "")
+        if not content:
+            continue
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
+        block_id = f"ev-{content_hash}"
+        wikilink_ref = f"daily/{date}#^{block_id}"
+
+        ev_by_block_id[block_id] = {
+            "content": content,
+            "entities": [e.upper().strip() for e in ev.get("entities", [])],
+            "relations": ev.get("relations", []),
+        }
+
+        for entity_name in ev_by_block_id[block_id]["entities"]:
+            entity_evidence_map[entity_name].append(wikilink_ref)
+        for rel in ev_by_block_id[block_id]["relations"]:
+            if len(rel) >= 2:
+                src, tgt = rel[0].upper().strip(), rel[1].upper().strip()
+                relation_evidence_map[(src, tgt)].append(wikilink_ref)
+
+    return ev_by_block_id, entity_evidence_map, relation_evidence_map
+
+
 def cmd_replay(args):
     """Process CC-extracted entities/relations JSON from stdin."""
     data = json.load(sys.stdin, strict=False)
@@ -333,8 +369,13 @@ def cmd_replay(args):
 
     entities = data.get("entities", [])
     relations = data.get("relations", [])
+    evidence_items = data.get("evidence", [])
     date = data.get("date", datetime.now().strftime("%Y-%m-%d"))
     summary = data.get("daily_summary", "")
+
+    # Build evidence maps: entity/relation → wikilink refs
+    ev_by_block_id, entity_evidence_map, relation_evidence_map = \
+        _build_evidence_maps(evidence_items, date)
 
     for e in entities:
         attrs = {
@@ -353,6 +394,9 @@ def cmd_replay(args):
         url = e.get("url", "")
         if url:
             attrs["url"] = url
+        name = e["name"].upper().strip()
+        if name in entity_evidence_map:
+            attrs["evidence"] = json.dumps(entity_evidence_map[name])
         graph.upsert_entity(e["name"], attrs)
 
     for r in relations:
@@ -363,6 +407,12 @@ def cmd_replay(args):
         }
         if "confidence_score" in r:
             attrs["confidence_score"] = r["confidence_score"]
+        src, tgt = r["source"].upper().strip(), r["target"].upper().strip()
+        key = (src, tgt)
+        rev_key = (tgt, src)
+        ev_refs = relation_evidence_map.get(key) or relation_evidence_map.get(rev_key)
+        if ev_refs:
+            attrs["evidence"] = json.dumps(ev_refs)
         graph.upsert_relation(r["source"], r["target"], attrs)
 
     hyperedges = data.get("hyperedges", [])
@@ -384,6 +434,8 @@ def cmd_replay(args):
     # Accumulate sessions for the day
     existing_entities = set()
     existing_sessions = []
+    existing_evidence_lines = []  # preserved evidence from prior replays
+    existing_ev_block_ids = set()
     if os.path.exists(daily_path):
         with open(daily_path, "r") as f:
             content = f.read()
@@ -400,6 +452,20 @@ def cmd_replay(args):
             for line in section.split("\n"):
                 if line.strip().startswith("- "):
                     existing_sessions.append(line)
+        # Keep existing evidence lines
+        if "## Evidence" in content:
+            idx = content.index("## Evidence")
+            section = content[idx:]
+            next_heading = section.find("\n## ", 1)
+            if next_heading != -1:
+                section = section[:next_heading]
+            for line in section.split("\n"):
+                if line.strip().startswith("- "):
+                    existing_evidence_lines.append(line)
+                    # Track existing block IDs to avoid duplicates
+                    bid_match = re.search(r'\^(ev-[a-f0-9]{6,8})', line)
+                    if bid_match:
+                        existing_ev_block_ids.add(bid_match.group(1))
 
     entity_names = [e["name"] for e in entities]
     all_entities = existing_entities | set(entity_names)
@@ -460,6 +526,22 @@ def cmd_replay(args):
     new_bullet = f"- {summary}"
     if new_bullet not in existing_sessions:
         lines.append(new_bullet)
+
+    # Evidence section: existing evidence + new evidence from this replay
+    new_ev_lines = []
+    for block_id, ev_data in ev_by_block_id.items():
+        if block_id in existing_ev_block_ids:
+            continue  # already in daily note
+        entity_links = " ".join(f"[[{e}]]" for e in ev_data["entities"])
+        suffix = f" → {entity_links}" if entity_links else ""
+        new_ev_lines.append(f"- {ev_data['content']}{suffix} ^{block_id}")
+
+    all_evidence_lines = existing_evidence_lines + new_ev_lines
+    if all_evidence_lines:
+        lines += ["", "## Evidence", ""]
+        for ev_line in all_evidence_lines:
+            lines.append(ev_line)
+
     lines += ["", "## Entities", ""]
     for name in sorted(all_entities):
         e = next((x for x in entities if x["name"] == name), None)
@@ -485,6 +567,7 @@ def cmd_replay(args):
         "status": "ok",
         "entities_added": len(entities),
         "relations_added": len(relations),
+        "evidence_added": len(new_ev_lines),
         "hyperedges_added": len(hyperedges),
         "total_nodes": graph.node_count,
         "total_edges": graph.edge_count,

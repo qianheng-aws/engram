@@ -16,6 +16,31 @@ GRAPH_FIELD_SEP = "<|ENGRAM_SEP|>"
 DESC_SNIPPET_LEN = 120
 
 
+def _merge_evidence(existing: dict, attrs: dict):
+    """Merge evidence refs: append new refs not already present (append-only).
+
+    Evidence is stored as a JSON-encoded list of wikilink strings:
+      ["daily/2026-04-13#^ev-abc123|snippet text", ...]
+    """
+    new_ev = attrs.get("evidence", "")
+    if not new_ev:
+        return
+    old_ev = existing.get("evidence", "")
+    try:
+        old_list = json.loads(old_ev) if old_ev else []
+    except (json.JSONDecodeError, TypeError):
+        old_list = []
+    try:
+        new_list = json.loads(new_ev) if isinstance(new_ev, str) else new_ev
+    except (json.JSONDecodeError, TypeError):
+        new_list = []
+    if not isinstance(new_list, list):
+        new_list = []
+    old_set = set(old_list)
+    merged = old_list + [r for r in new_list if r not in old_set]
+    attrs["evidence"] = json.dumps(merged)
+
+
 class MemoryGraph:
     """In-memory knowledge graph with Obsidian vault persistence."""
 
@@ -75,6 +100,8 @@ class MemoryGraph:
                     attrs["description"] = f"{parts[0]}{GRAPH_FIELD_SEP}{new_desc}"
                 else:
                     attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
+            # Merge evidence: append-only (never overwrite existing refs)
+            _merge_evidence(existing, attrs)
             existing.update(attrs)
         else:
             self._graph.add_node(name, **attrs)
@@ -99,6 +126,8 @@ class MemoryGraph:
                     attrs["description"] = f"{parts[0]}{GRAPH_FIELD_SEP}{new_desc}"
                 else:
                     attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
+            # Merge evidence: append-only
+            _merge_evidence(existing, attrs)
             # Temporal: preserve first_seen, update last_seen
             attrs["last_seen"] = now
             attrs.setdefault("first_seen", existing.get("first_seen", now))
@@ -272,6 +301,19 @@ class MemoryGraph:
                     lines += ["## References", ""]
                     for url in refs:
                         lines.append(f"- {url}")
+                    lines.append("")
+
+            # Evidence section (backlinks to daily note block refs)
+            evidence_raw = attrs.get("evidence", "")
+            if evidence_raw:
+                try:
+                    evidence_refs = json.loads(evidence_raw) if isinstance(evidence_raw, str) else evidence_raw
+                except (json.JSONDecodeError, TypeError):
+                    evidence_refs = []
+                if evidence_refs:
+                    lines += ["## Evidence", ""]
+                    for ref in evidence_refs:
+                        lines.append(f"- [[{ref}]]")
                     lines.append("")
 
             if relations:
