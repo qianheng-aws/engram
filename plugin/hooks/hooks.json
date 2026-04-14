@@ -3,7 +3,7 @@
     "hooks": {
         "PreToolUse": [
             {
-                "matcher": "Grep|Glob|Read",
+                "matcher": "Grep|Glob|Read|Agent",
                 "hooks": [
                     {
                         "type": "command",
