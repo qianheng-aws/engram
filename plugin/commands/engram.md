@@ -76,6 +76,11 @@ JSON format:
     "confidence": "EXTRACTED|INFERRED|AMBIGUOUS",
     "confidence_score": 0.75
   }],
+  "evidence": [{
+    "content": "Specific factual claim from the session",
+    "entities": ["ENTITY_A", "ENTITY_B"],
+    "relations": [["ENTITY_A", "ENTITY_B"]]
+  }],
   "hyperedges": [{
     "id": "snake_case_id",
     "label": "Human Readable Group Name",
@@ -92,6 +97,11 @@ Notes:
 - `references`: Optional. Other URLs from the session (issues, PRs, docs, blog posts) relevant but not the entity's identity URL.
 - `local_path`: Optional. Absolute path to local directory/file for this entity (repos, projects, data files). Skip for concepts/bugs without a local presence.
 - `confidence_score`: Optional. Numeric 0.0-1.0 on relations — how confident the relationship is. Use alongside string `confidence`.
+- `evidence`: Grounded factual claims that support entities/relations. Each item is stored as a block-referenced line in the daily note, linked back from entity files. This is the **append-only evidence layer** — unlike descriptions (which get summarized on merge), evidence is never compressed or overwritten.
+  - `content`: One specific, verifiable factual claim (a design decision, a bug root cause, a config value, a comparison result). Be concrete — include numbers, file paths, code snippets where relevant. One sentence to short paragraph.
+  - `entities`: Which entities this evidence supports (names must match entities array).
+  - `relations`: Which relations this evidence supports (pairs of entity names).
+  - Extract 1-3 evidence items per entity. Skip trivial entities that don't need grounding.
 - `hyperedges`: Optional. Group 3+ entities that form a logical unit (e.g., "OODA Pipeline" grouping 5 stages, "Auth Stack" grouping 3 tools). Skip if no natural groupings exist.
 
 **4. Check consolidation signal:**
