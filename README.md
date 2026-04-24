@@ -93,6 +93,33 @@ Optional:
 - `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
 - `engram auto on` — auto-capture sessions on exit
 
+## 🔄 Updating
+
+Engram has two parts — the Python CLI and the Claude Code plugin — update both.
+
+### From PyPI
+
+```bash
+pip install --upgrade engram-echo
+claude plugin update engram@engram-echo
+```
+
+### From source
+
+```bash
+cd /path/to/engram
+git pull
+pip install -e .                              # usually a no-op under -e, safe to run
+claude plugin marketplace update engram-echo  # refresh local marketplace
+claude plugin update engram@engram-echo
+```
+
+### After updating
+
+- `engram install` — re-injects the latest prompt block into `~/.claude/CLAUDE.md` if it changed
+- `engram lint` — validates vault consistency (catches schema drift)
+- Check `~/.engram/config.json` against the [config example](#engram-vs-engram-full) — new fields are not auto-added to existing configs
+
 ## 🎮 Commands
 
 | Command | Description |
