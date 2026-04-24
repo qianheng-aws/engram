@@ -53,8 +53,12 @@ Every entity and relation MUST include a `confidence` field:
 
 **3. Pipe extracted JSON:**
 
+Use a heredoc with a **quoted** delimiter (`<<'JSON_EOF'`) so single quotes, backticks, and `$` inside the JSON are passed through literally:
+
 ```bash
-echo '<json>' | engram replay --stdin
+engram replay --stdin <<'JSON_EOF'
+<json>
+JSON_EOF
 ```
 
 JSON format:
