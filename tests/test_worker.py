@@ -234,6 +234,91 @@ def test_worker_unparseable_output_fails():
         print("  ✅ worker: unparseable claude output → non-zero exit, logged")
 
 
+def test_worker_invalid_schema_no_dedup_poisoning():
+    """A malformed field NOT in the dedup hash (hyperedge missing 'id') must
+    fail BEFORE any dedup marker is written, so a corrected retry can land."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        bad_extraction = dict(EXTRACTION)
+        # Same entities/relations/summary → same dedup hash as the good payload
+        bad_extraction["hyperedges"] = [{"label": "No Id Group",
+                                         "members": ["WORKER_ENTITY_A", "WORKER_ENTITY_B"]}]
+        bad = _write_fake_claude(tmpdir, extraction=bad_extraction)
+        config = _write_config(tmpdir, vault, bad)
+        _seed_pending(vault, n=1)
+
+        result = _run_worker(vault, config)
+        assert result.returncode != 0
+        assert "Traceback" not in result.stderr
+
+        # Offset NOT advanced, error logged
+        state_path = os.path.join(vault, "_meta", "worker-state.json")
+        if os.path.exists(state_path):
+            assert _read_state(vault).get("offset", 0) == 0
+        with open(os.path.join(vault, "_meta", "worker.log")) as f:
+            assert "ERROR" in f.read()
+
+        # Retry with corrected claude (identical dedup hash) must LAND,
+        # proving the failed run never wrote a dedup marker
+        good = _write_fake_claude(tmpdir)
+        config2 = _write_config(tmpdir, vault, good)
+        result2 = _run_worker(vault, config2, check=True)
+        summary = json.loads(result2.stdout)
+        assert summary["processed"] == 1
+        assert summary["entities"] == 2
+
+        status = _run_cli(["status"], vault, config2)
+        assert "WORKER_ENTITY_A" in status["entities"]
+        print("  ✅ worker: invalid schema fails pre-dedup; corrected retry lands")
+
+
+def test_worker_entity_missing_name_logged_error():
+    """Entity without 'name' → clean ERROR log line + non-zero exit, no traceback."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        bad_extraction = {
+            "date": "2026-07-13",
+            "entities": [{"entity_type": "CONCEPT", "description": "nameless"}],
+            "relations": [],
+            "daily_summary": "bad",
+        }
+        bad = _write_fake_claude(tmpdir, extraction=bad_extraction)
+        config = _write_config(tmpdir, vault, bad)
+        _seed_pending(vault, n=1)
+
+        result = _run_worker(vault, config)
+        assert result.returncode != 0
+        assert "Traceback" not in result.stderr
+        with open(os.path.join(vault, "_meta", "worker.log")) as f:
+            assert "ERROR" in f.read()
+        state_path = os.path.join(vault, "_meta", "worker-state.json")
+        if os.path.exists(state_path):
+            assert _read_state(vault).get("offset", 0) == 0
+        print("  ✅ worker: entity missing 'name' → logged error, offset kept")
+
+
+def test_worker_envelope_is_error():
+    """Envelope with is_error true → extraction failure logging the API error text."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        path = os.path.join(tmpdir, "fake-claude")
+        envelope = json.dumps({"type": "result", "is_error": True,
+                               "result": "API rate limit exceeded"})
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\ncat <<'ENGRAM_FAKE_EOF'\n" + envelope + "\nENGRAM_FAKE_EOF\n")
+        os.chmod(path, 0o755)
+        config = _write_config(tmpdir, vault, path)
+        _seed_pending(vault, n=1)
+
+        result = _run_worker(vault, config)
+        assert result.returncode != 0
+        with open(os.path.join(vault, "_meta", "worker.log")) as f:
+            log = f.read()
+        assert "ERROR" in log
+        assert "rate limit" in log
+        print("  ✅ worker: is_error envelope → failure with API error text logged")
+
+
 # ── dedup honored ─────────────────────────────────────────
 
 def test_worker_dedup_prevents_double_landing():
@@ -321,6 +406,9 @@ if __name__ == "__main__":
     test_worker_lock_held_exits_zero_without_processing()
     test_worker_claude_failure_keeps_offset_and_logs()
     test_worker_unparseable_output_fails()
+    test_worker_invalid_schema_no_dedup_poisoning()
+    test_worker_entity_missing_name_logged_error()
+    test_worker_envelope_is_error()
     test_worker_dedup_prevents_double_landing()
     test_worker_refreshes_context_cache()
     test_worker_skips_malformed_pending_lines()

@@ -1498,6 +1498,46 @@ def _extract_json_object(text):
     return json.loads(text, strict=False)
 
 
+def _validate_extraction(data):
+    """Validate model-extracted JSON against the fields the replay path
+    indexes unconditionally, BEFORE any dedup marker or graph write happens.
+
+    Raises ValueError on the first problem found.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("extraction is not a JSON object")
+
+    def _req_str(item, key, what):
+        if not isinstance(item, dict):
+            raise ValueError(f"{what} is not an object: {item!r:.100}")
+        val = item.get(key)
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(f"{what} missing required string field '{key}'")
+
+    for key in ("entities", "relations", "evidence", "hyperedges"):
+        if not isinstance(data.get(key, []), list):
+            raise ValueError(f"'{key}' is not a list")
+
+    for e in data.get("entities", []):
+        _req_str(e, "name", "entity")
+    for r in data.get("relations", []):
+        _req_str(r, "source", "relation")
+        _req_str(r, "target", "relation")
+    for h in data.get("hyperedges", []):
+        _req_str(h, "id", "hyperedge")
+        _req_str(h, "label", "hyperedge")
+    for ev in data.get("evidence", []):
+        if not isinstance(ev, dict):
+            raise ValueError(f"evidence item is not an object: {ev!r:.100}")
+        if not isinstance(ev.get("entities", []), list) or not all(
+                isinstance(x, str) for x in ev.get("entities", [])):
+            raise ValueError("evidence 'entities' must be a list of strings")
+        for rel in ev.get("relations", []):
+            if not isinstance(rel, (list, tuple)) or not all(
+                    isinstance(x, str) for x in rel):
+                raise ValueError("evidence 'relations' items must be pairs of strings")
+
+
 def _worker_log(vault, message):
     """Append one timestamped line to _meta/worker.log."""
     log_path = os.path.join(vault, "_meta", "worker.log")
@@ -1520,8 +1560,10 @@ def _read_worker_state(vault):
 def _write_worker_state(vault, state):
     path = os.path.join(vault, "_meta", "worker-state.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
         json.dump(state, f, indent=2)
+    os.rename(tmp_path, path)  # atomic: never leaves a torn state file
 
 
 def _drain_pending(vault, offset):
@@ -1593,7 +1635,9 @@ def cmd_worker(args):
     lock_file = open(os.path.join(meta_dir, "worker.lock"), "w")
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except BlockingIOError:
+        # Another worker holds the lock — not an error
+        lock_file.close()
         print(json.dumps({"processed": 0, "entities": 0, "relations": 0}))
         return
 
@@ -1626,29 +1670,37 @@ def cmd_worker(args):
             envelope = json.loads(proc.stdout, strict=False)
             if not isinstance(envelope, dict) or "result" not in envelope:
                 raise ValueError("claude output missing 'result' envelope field")
+            if envelope.get("is_error"):
+                raise RuntimeError(
+                    f"claude reported an error: {str(envelope['result'])[:500]}")
             data = _extract_json_object(envelope["result"])
+
+            # Validate BEFORE _replay_data so a batch that would crash
+            # mid-landing never writes a dedup marker (which would make the
+            # retry get "skipped" and permanently drop the batch)
+            _validate_extraction(data)
+
+            # 4. Land via the shared replay path (dedup applies unchanged)
+            result = _replay_data(vault, data)
+            entities = result.get("entities_added", 0)
+            relations = result.get("relations_added", 0)
+
+            # 5+6. Refresh cache + slow-cadence consolidation on real landings
+            if result.get("status") == "ok":
+                _refresh_context_cache(vault)
+                state["replays_since_consolidation"] = \
+                    state.get("replays_since_consolidation", 0) + 1
+                _maybe_consolidate(vault, state, cfg["worker_consolidation_every"])
+
+            # 7. Persist the watermark only after a fully successful run
+            state["offset"] = new_offset
+            _write_worker_state(vault, state)
         except Exception as e:
             # Leave the watermark unchanged so a later run retries these turns
             _worker_log(vault, f"ERROR turns={len(turns)} {type(e).__name__}: {e}")
             print(json.dumps({"error": str(e), "processed": 0,
                               "entities": 0, "relations": 0}))
             sys.exit(1)
-
-        # 4. Land via the shared replay path (dedup applies unchanged)
-        result = _replay_data(vault, data)
-        entities = result.get("entities_added", 0)
-        relations = result.get("relations_added", 0)
-
-        # 5+6. Refresh cache + slow-cadence consolidation on real landings
-        if result.get("status") == "ok":
-            _refresh_context_cache(vault)
-            state["replays_since_consolidation"] = \
-                state.get("replays_since_consolidation", 0) + 1
-            _maybe_consolidate(vault, state, cfg["worker_consolidation_every"])
-
-        # 7. Persist the watermark only after a fully successful run
-        state["offset"] = new_offset
-        _write_worker_state(vault, state)
 
         _worker_log(vault, f"OK turns={len(turns)} entities={entities} "
                            f"relations={relations} status={result.get('status')}")
