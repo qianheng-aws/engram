@@ -312,6 +312,103 @@ def test_stop_hook_no_queue_dir_created():
         print("  ✅ stop hook does not create queue/ directory")
 
 
+def test_stop_hook_real_transcript_format():
+    """Stop hook extracts text from the real Claude Code transcript format.
+
+    Real transcripts nest text under message.content: a plain string for user
+    prompts, or a list of blocks for assistant entries where text lives in
+    {"type": "text", "text": ...} blocks. tool_use / tool_result payloads must
+    not leak into turn_text, and the backward scan must not stop at a
+    tool_result entry (which also has type == "user" in real transcripts).
+    """
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-hook")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
+
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault}, f)
+
+        assistant_text = "Here is the final answer, explained in enough detail to pass the length threshold."
+        transcript_path = os.path.join(tmpdir, "transcript.jsonl")
+        with open(transcript_path, "w") as f:
+            # Previous turn (must NOT be captured)
+            f.write(json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "An earlier prompt from a previous turn"},
+            }) + "\n")
+            f.write(json.dumps({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": "An earlier answer from a previous turn"},
+                ]},
+            }) + "\n")
+            # Current turn: user prompt (string content)
+            f.write(json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": "Please explain the nested transcript format"},
+            }) + "\n")
+            # Assistant entry with text + tool_use blocks
+            f.write(json.dumps({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": "Let me look that up."},
+                    {"type": "tool_use", "id": "toolu_01", "name": "Read",
+                     "input": {"file_path": "/secret/tool-use-payload.txt"}},
+                ]},
+            }) + "\n")
+            # Tool result entry (type "user" in real transcripts)
+            f.write(json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_01",
+                     "content": "secret tool result payload"},
+                ]},
+            }) + "\n")
+            # Final assistant entry with the answer
+            f.write(json.dumps({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": assistant_text},
+                ]},
+            }) + "\n")
+
+        payload = json.dumps({
+            "session_id": "real-format-session",
+            "last_assistant_message": assistant_text,
+            "transcript_path": transcript_path,
+            "stop_reason": "user",
+        })
+
+        result = subprocess.run(
+            [sys.executable, hook_path, "Stop"],
+            input=payload, capture_output=True, text=True,
+            env={**os.environ, "ENGRAM_CONFIG": config_path},
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        pending_path = os.path.join(vault, "_meta", "pending.jsonl")
+        assert os.path.exists(pending_path), "pending.jsonl not created"
+        with open(pending_path) as f:
+            lines = f.readlines()
+        assert len(lines) == 1
+
+        record = json.loads(lines[0])
+        turn_text = record["turn_text"]
+        # User prompt (string content) and assistant text (block content) captured
+        assert "Please explain the nested transcript format" in turn_text
+        assert "Let me look that up." in turn_text
+        assert assistant_text in turn_text
+        # tool_use / tool_result payloads must NOT leak into turn_text
+        assert "tool-use-payload" not in turn_text
+        assert "secret tool result payload" not in turn_text
+        # Previous turn must not be captured
+        assert "previous turn" not in turn_text
+        print("  ✅ stop hook extracts full turn from real nested transcript format")
+
+
 def test_stop_hook_turn_text_capped():
     """Stop hook caps turn_text at a reasonable limit (e.g., 20,000 chars)."""
     hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-hook")
@@ -367,5 +464,6 @@ if __name__ == "__main__":
     test_stop_hook_fallback_to_last_message()
     test_stop_hook_multiple_calls_append()
     test_stop_hook_no_queue_dir_created()
+    test_stop_hook_real_transcript_format()
     test_stop_hook_turn_text_capped()
     print("\n🎉 All stop hook tests passed!")

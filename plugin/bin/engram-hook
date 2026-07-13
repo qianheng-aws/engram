@@ -36,8 +36,38 @@ def _get_vault():
         return FALLBACK_VAULT
 
 
+def _entry_text(entry):
+    """Extract human-readable text from a transcript entry, or "" if none.
+
+    Handles both a flat {"text": ...} shape and the real Claude Code session
+    format where text nests under message.content: content is either a plain
+    string, or a list of blocks where text lives in {"type": "text",
+    "text": ...} blocks (tool_use / tool_result blocks are skipped).
+    """
+    text = entry.get("text", "")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            block_text = block.get("text", "")
+            if isinstance(block_text, str) and block_text.strip():
+                parts.append(block_text.strip())
+        return "\n\n".join(parts)
+    return ""
+
+
 def _extract_full_turn(transcript_path):
-    """Extract the last full turn (user + assistant) from transcript.
+    """Extract the last full turn (user prompt + assistant text) from transcript.
 
     Returns None if extraction fails for any reason.
     """
@@ -52,30 +82,24 @@ def _extract_full_turn(transcript_path):
         if not lines:
             return None
 
-        # Parse JSONL entries from the end
-        entries = []
+        # Walk backwards, collecting non-empty text until the most recent real
+        # user prompt is included. Note: tool_result entries also have type
+        # "user" in real transcripts but carry no prompt text (_entry_text
+        # returns "" for them), so only a user entry WITH text ends the turn.
+        turn_parts = []
         for line in reversed(lines):
             try:
                 entry = json.loads(line.strip())
-                entries.insert(0, entry)
-                # Stop when we find a user message (start of the turn)
-                if entry.get("type") == "user":
-                    break
             except (json.JSONDecodeError, ValueError):
                 continue
-
-        if not entries:
-            return None
-
-        # Concatenate non-empty text from user message onwards; guard against
-        # empty/whitespace-only entries producing stray "\n\n" separators.
-        turn_parts = []
-        for entry in entries:
-            if entry.get("type", "") not in ("user", "assistant"):
+            entry_type = entry.get("type", "")
+            if entry_type not in ("user", "assistant"):
                 continue
-            text = entry.get("text", "")
-            if isinstance(text, str) and text.strip():
-                turn_parts.append(text.strip())
+            text = _entry_text(entry)
+            if text:
+                turn_parts.insert(0, text)
+            if entry_type == "user" and text:
+                break
 
         if not turn_parts:
             return None
