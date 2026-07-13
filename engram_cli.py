@@ -1011,14 +1011,12 @@ def cmd_save_pattern(args):
 
 # ── context ────────────────────────────────────────────
 
-def cmd_context(args):
-    """Output compact summary for injecting into agent system prompt.
+def _build_context_text(vault):
+    """Build context markdown text and metadata.
 
-    Inspired by community/engram's mem_context — returns recent activity
-    and top entities in a token-efficient format.
+    Returns: (context_text: str, metadata: dict)
     """
-    graph = MemoryGraph(args.vault)
-    vault = args.vault
+    graph = MemoryGraph(vault)
 
     # Top entities by degree (hub nodes)
     G = graph._graph
@@ -1110,12 +1108,46 @@ def cmd_context(args):
 
     context_text = "\n\n".join(parts)
 
-    print(json.dumps({
-        "context": context_text,
+    metadata = {
         "entity_count": graph.node_count,
         "edge_count": graph.edge_count,
         "suggested_questions": suggested,
-    }, indent=2))
+    }
+
+    return context_text, metadata
+
+
+def cmd_context(args):
+    """Output compact summary for injecting into agent system prompt.
+
+    Inspired by community/engram's mem_context — returns recent activity
+    and top entities in a token-efficient format.
+    """
+    vault = args.vault
+    context_text, metadata = _build_context_text(vault)
+
+    if args.write_cache:
+        # Write cache mode: save markdown to _meta/context-cache.md
+        meta_dir = os.path.join(vault, "_meta")
+        os.makedirs(meta_dir, exist_ok=True)
+        cache_path = os.path.join(meta_dir, "context-cache.md")
+
+        with open(cache_path, "w", encoding="utf-8") as f:
+            f.write(context_text)
+
+        file_size = len(context_text.encode("utf-8"))
+        print(json.dumps({
+            "written": cache_path,
+            "bytes": file_size,
+        }))
+    else:
+        # Default mode: print JSON
+        print(json.dumps({
+            "context": context_text,
+            "entity_count": metadata["entity_count"],
+            "edge_count": metadata["edge_count"],
+            "suggested_questions": metadata["suggested_questions"],
+        }, indent=2))
 
 
 # ── feedback ───────────────────────────────────────────
@@ -1506,6 +1538,7 @@ def main():
     p.add_argument("--stdin", action="store_true", help="Read correction instructions JSON from stdin")
 
     p = sub.add_parser("context", help="Compact summary for system prompt injection")
+    p.add_argument("--write-cache", action="store_true", help="Write markdown context to _meta/context-cache.md")
 
     p = sub.add_parser("lint", help="Validate vault consistency (GraphML vs markdown, dead links, orphans)")
 

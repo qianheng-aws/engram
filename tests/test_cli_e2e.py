@@ -424,6 +424,76 @@ def test_lint_incomplete_frontmatter():
         print("  ✅ lint: detects incomplete frontmatter")
 
 
+# ── context ───────────────────────────────────────────────
+
+def test_context_json_output():
+    """context without flag prints JSON to stdout."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)
+        result = _run(["context"], vault)
+        assert "context" in result
+        assert "entity_count" in result
+        assert "edge_count" in result
+        assert result["entity_count"] == 4
+        print("  ✅ context: JSON output unchanged")
+
+
+def test_context_write_cache_seeded():
+    """context --write-cache creates cache file with entity names."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)
+
+        # Run with --write-cache
+        result = subprocess.run(
+            CLI + ["context", "--write-cache", "--vault", vault],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"Command failed:\nstderr: {result.stderr}\nstdout: {result.stdout}"
+        output = json.loads(result.stdout)
+
+        # Verify confirmation JSON
+        assert "written" in output
+        assert "bytes" in output
+        assert "_meta/context-cache.md" in output["written"]
+
+        # Verify cache file exists and contains expected content
+        cache_path = os.path.join(vault, "_meta", "context-cache.md")
+        assert os.path.exists(cache_path)
+
+        with open(cache_path) as f:
+            content = f.read()
+
+        # Must contain a god-node name from seed data
+        assert "PROJECT_A" in content or "BUG_X" in content or "TOOL_Y" in content or "PROJECT_B" in content
+        assert "## Key Entities" in content  # Should have the section header
+        print("  ✅ context --write-cache: creates cache with entity names")
+
+
+def test_context_write_cache_empty_vault():
+    """context --write-cache on empty vault creates empty/header-only file."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+
+        # Run with --write-cache on empty vault
+        result = subprocess.run(
+            CLI + ["context", "--write-cache", "--vault", vault],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"Command failed:\nstderr: {result.stderr}\nstdout: {result.stdout}"
+        output = json.loads(result.stdout)
+
+        # Verify confirmation JSON
+        assert "written" in output
+        assert "bytes" in output
+
+        # Verify cache file exists (empty or header-only is fine)
+        cache_path = os.path.join(vault, "_meta", "context-cache.md")
+        assert os.path.exists(cache_path)
+        print("  ✅ context --write-cache: empty vault creates file without crash")
+
+
 if __name__ == "__main__":
     print("Testing replay...")
     test_replay_basic()
@@ -463,5 +533,10 @@ if __name__ == "__main__":
     test_lint_orphan_markdown()
     test_lint_dead_wikilinks()
     test_lint_incomplete_frontmatter()
+
+    print("\nTesting context...")
+    test_context_json_output()
+    test_context_write_cache_seeded()
+    test_context_write_cache_empty_vault()
 
     print("\n🎉 All CLI e2e tests passed!")
