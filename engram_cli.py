@@ -1410,6 +1410,10 @@ WORKER_DEFAULTS = {
     "worker_claude_bin": "claude",
     "worker_model": None,
     "worker_consolidation_every": 10,
+    # Max pending turns drained per worker run. Bounds the extraction prompt
+    # (~20KB/turn cap → ≤~400KB) and keeps a huge backlog from producing one
+    # unmanageable batch; leftover lines are picked up by the next run.
+    "worker_max_turns_per_run": 20,
 }
 
 # Fallback extraction rules, used only if plugin/commands/engram.md cannot be
@@ -1578,11 +1582,14 @@ def _write_worker_state(vault, state):
     os.rename(tmp_path, path)  # atomic: never leaves a torn state file
 
 
-def _drain_pending(vault, offset):
+def _drain_pending(vault, offset, max_turns=None):
     """Read complete JSON lines from pending.jsonl past offset.
 
     Returns (turns, new_offset). Malformed lines are skipped but still
     advance the offset. A truncated/rotated file (offset > size) resets to 0.
+    With max_turns set, at most that many turn records are consumed and
+    new_offset only advances past the lines actually consumed — leftover
+    backlog is picked up by the next run.
     """
     pending_path = os.path.join(vault, "_meta", "pending.jsonl")
     if not os.path.exists(pending_path):
@@ -1596,18 +1603,25 @@ def _drain_pending(vault, offset):
     last_nl = data.rfind(b"\n")
     if last_nl == -1:
         return [], offset  # no complete new line
-    complete, new_offset = data[:last_nl + 1], offset + last_nl + 1
+    complete = data[:last_nl + 1]
     turns = []
-    for line in complete.decode("utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-            if isinstance(record, dict) and record.get("turn_text"):
-                turns.append(record)
-        except json.JSONDecodeError:
-            continue  # skip malformed line, offset still advances
+    new_offset = offset
+    pos = 0
+    while pos < len(complete):
+        nl = complete.index(b"\n", pos)
+        raw_line = complete[pos:nl + 1]
+        pos = nl + 1
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if line:
+            try:
+                record = json.loads(line)
+                if isinstance(record, dict) and record.get("turn_text"):
+                    turns.append(record)
+            except json.JSONDecodeError:
+                pass  # skip malformed line, offset still advances
+        new_offset += len(raw_line)
+        if max_turns is not None and len(turns) >= max_turns:
+            break
     return turns, new_offset
 
 
@@ -1656,7 +1670,11 @@ def cmd_worker(args):
     try:
         cfg = _load_worker_config()
         state = _read_worker_state(vault)
-        turns, new_offset = _drain_pending(vault, state.get("offset", 0))
+        max_turns = cfg["worker_max_turns_per_run"]
+        if not isinstance(max_turns, int) or max_turns < 1:
+            max_turns = WORKER_DEFAULTS["worker_max_turns_per_run"]
+        turns, new_offset = _drain_pending(vault, state.get("offset", 0),
+                                           max_turns=max_turns)
 
         # 2. Nothing new → cheap idempotent no-op
         if not turns:
@@ -1666,16 +1684,20 @@ def cmd_worker(args):
             print(json.dumps({"processed": 0, "entities": 0, "relations": 0}))
             return
 
-        # 3. Headless tool-less extraction (model returns JSON text only)
+        # 3. Headless tool-less extraction (model returns JSON text only).
+        # The prompt goes via STDIN (`claude -p` reads it there when no
+        # positional prompt is given): argv would hit Linux MAX_ARG_STRLEN
+        # (~128KB) on a large backlog and leak conversation text into `ps`.
         prompt = _build_extraction_prompt(turns)
-        cmd = [cfg["worker_claude_bin"], "-p", prompt, "--output-format", "json"]
+        cmd = [cfg["worker_claude_bin"], "-p", "--output-format", "json"]
         if cfg["worker_model"]:
             cmd += ["--model", cfg["worker_model"]]
         if args.verbose:
             print(f"worker: invoking {cfg['worker_claude_bin']} for {len(turns)} turn(s)",
                   file=sys.stderr)
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+            proc = subprocess.run(cmd, input=prompt, capture_output=True,
+                                  text=True, timeout=args.timeout)
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"claude exited {proc.returncode}: {proc.stderr.strip()[:500]}")

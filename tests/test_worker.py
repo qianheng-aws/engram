@@ -36,19 +36,35 @@ def _make_vault(tmpdir):
     return vault
 
 
-def _write_fake_claude(tmpdir, extraction=None, exit_code=0, fenced=True):
-    """Create a fake claude binary printing a canned envelope JSON."""
+def _write_fake_claude(tmpdir, extraction=None, exit_code=0, fenced=True,
+                       capture_prefix=None):
+    """Create a fake claude binary printing a canned envelope JSON.
+
+    The stub reads the prompt from STDIN (like `claude -p` with no positional
+    prompt argument) — proving the worker never passes the prompt via argv.
+    With capture_prefix, it records stdin and argv to files for assertions.
+    """
     path = os.path.join(tmpdir, "fake-claude")
+    text = json.dumps(extraction if extraction is not None else EXTRACTION)
+    if fenced:
+        text = "```json\n" + text + "\n```"
+    envelope = json.dumps({"type": "result", "is_error": False, "result": text})
+    lines = [
+        "#!/usr/bin/env python3",
+        "import sys, json",
+        "prompt = sys.stdin.read()",
+    ]
+    if capture_prefix:
+        lines += [
+            f"open({capture_prefix + '.stdin'!r}, 'a').write(prompt + chr(0))",
+            f"open({capture_prefix + '.argv'!r}, 'a').write(json.dumps(sys.argv) + chr(10))",
+        ]
     if exit_code != 0:
-        body = f"#!/bin/sh\necho 'boom' >&2\nexit {exit_code}\n"
+        lines += ["sys.stderr.write('boom\\n')", f"sys.exit({exit_code})"]
     else:
-        text = json.dumps(extraction if extraction is not None else EXTRACTION)
-        if fenced:
-            text = "```json\n" + text + "\n```"
-        envelope = json.dumps({"type": "result", "is_error": False, "result": text})
-        body = "#!/bin/sh\ncat <<'ENGRAM_FAKE_EOF'\n" + envelope + "\nENGRAM_FAKE_EOF\n"
+        lines += [f"sys.stdout.write({envelope!r})"]
     with open(path, "w") as f:
-        f.write(body)
+        f.write("\n".join(lines) + "\n")
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return path
 
@@ -378,6 +394,102 @@ def test_worker_skips_malformed_pending_lines():
         print("  ✅ worker: malformed pending lines skipped, valid ones processed")
 
 
+# ── prompt via stdin (no giant argv) ──────────────────────
+
+def test_worker_passes_prompt_via_stdin_not_argv():
+    """The extraction prompt reaches claude on stdin; argv carries no prompt
+    text (Linux MAX_ARG_STRLEN caps a single argv string at 128KB, and argv
+    leaks conversation text into `ps` output)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        capture = os.path.join(tmpdir, "capture")
+        fake = _write_fake_claude(tmpdir, capture_prefix=capture)
+        config = _write_config(tmpdir, vault, fake)
+        _seed_pending(vault, n=1)
+
+        _run_worker(vault, config, check=True)
+
+        with open(capture + ".stdin") as f:
+            stdin_prompt = f.read().rstrip("\0")
+        assert "Extraction rules" in stdin_prompt
+        assert "User asked about topic 0" in stdin_prompt
+
+        with open(capture + ".argv") as f:
+            argv = json.loads(f.readline())
+        # argv must be flags only — no argument may contain the turn text
+        assert not any("User asked about topic" in a for a in argv), argv
+        assert all(len(a) < 1000 for a in argv), "oversized argv argument"
+        print("  ✅ worker: prompt passed via stdin, argv stays tiny")
+
+
+def test_worker_giant_backlog_does_not_hit_argv_limit():
+    """A backlog whose combined prompt exceeds MAX_ARG_STRLEN (128KB) must
+    still be processed (via stdin), not fail with E2BIG."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake = _write_fake_claude(tmpdir)
+        # cap high enough that all turns land in one batch
+        config = _write_config(tmpdir, vault, fake, worker_max_turns_per_run=20)
+        pending = os.path.join(vault, "_meta", "pending.jsonl")
+        with open(pending, "a") as f:
+            for i in range(10):
+                f.write(json.dumps({
+                    "session_id": f"big-{i}",
+                    "timestamp": f"2026-07-13T11:{i:02d}:00",
+                    "turn_text": ("Long conversation text block. " * 640),  # ~19KB each
+                }) + "\n")
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["processed"] == 10
+        print("  ✅ worker: >128KB combined prompt processed via stdin (no E2BIG)")
+
+
+# ── bounded drain batches ─────────────────────────────────
+
+def test_worker_batch_cap_bounds_each_run():
+    """With worker_max_turns_per_run=N, a run processes at most N turns and
+    leaves the offset mid-file; the next run picks up the rest."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake = _write_fake_claude(tmpdir)
+        config = _write_config(tmpdir, vault, fake, worker_max_turns_per_run=3)
+        pending = _seed_pending(vault, n=5)
+        size = os.path.getsize(pending)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["processed"] == 3
+
+        state = _read_state(vault)
+        assert 0 < state["offset"] < size, \
+            f"offset should be mid-file, got {state['offset']} (size {size})"
+
+        # Second run drains the remaining 2 turns and reaches EOF
+        result2 = _run_worker(vault, config, check=True)
+        summary2 = json.loads(result2.stdout)
+        assert summary2["processed"] == 2
+        assert _read_state(vault)["offset"] == size
+        print("  ✅ worker: batch cap bounds each run; next run resumes mid-file")
+
+
+def test_worker_default_batch_cap_is_20():
+    """Without config, at most 20 turns are drained per run."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake = _write_fake_claude(tmpdir)
+        config = _write_config(tmpdir, vault, fake)
+        _seed_pending(vault, n=25)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["processed"] == 20
+
+        result2 = _run_worker(vault, config, check=True)
+        assert json.loads(result2.stdout)["processed"] == 5
+        print("  ✅ worker: default cap of 20 turns per run")
+
+
 # ── consolidation hook ────────────────────────────────────
 
 def test_worker_consolidation_marker_and_counter_reset():
@@ -412,5 +524,9 @@ if __name__ == "__main__":
     test_worker_dedup_prevents_double_landing()
     test_worker_refreshes_context_cache()
     test_worker_skips_malformed_pending_lines()
+    test_worker_passes_prompt_via_stdin_not_argv()
+    test_worker_giant_backlog_does_not_hit_argv_limit()
+    test_worker_batch_cap_bounds_each_run()
+    test_worker_default_batch_cap_is_20()
     test_worker_consolidation_marker_and_counter_reset()
     print("\n🎉 All worker tests passed!")
