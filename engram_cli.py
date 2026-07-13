@@ -1854,6 +1854,12 @@ def cmd_consolidation(args):
             "replay_count": 0,
         }
         _write_consolidation_state(vault, state)
+        # Clear the due marker written by _maybe_consolidate, so
+        # `engram status` stops recommending consolidation after a reset
+        try:
+            os.remove(os.path.join(vault, "_meta", "consolidation-due"))
+        except FileNotFoundError:
+            pass
         print(json.dumps({"status": "ok", "action": "reset", "state": state}))
     else:
         state = _read_consolidation_state(vault)

@@ -562,6 +562,31 @@ def test_worker_consolidation_marker_and_counter_reset():
         print("  ✅ worker: consolidation marker written, counter reset, status surfaces it")
 
 
+def test_consolidation_reset_clears_due_marker():
+    """`engram consolidation --reset` deletes the consolidation-due marker,
+    so `engram status` stops recommending consolidation."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake = _write_fake_claude(tmpdir)
+        config = _write_config(tmpdir, vault, fake)
+
+        marker = os.path.join(vault, "_meta", "consolidation-due")
+        with open(marker, "w") as f:
+            f.write("2026-07-13T00:00:00\n")
+
+        status = _run_cli(["status"], vault, config)
+        assert status.get("consolidation_recommended") is True
+
+        reset = _run_cli(["consolidation", "--reset"], vault, config)
+        assert reset["status"] == "ok"
+        assert not os.path.exists(marker), \
+            "consolidation --reset must delete the consolidation-due marker"
+
+        status = _run_cli(["status"], vault, config)
+        assert status.get("consolidation_recommended") is False
+        print("  ✅ consolidation --reset clears the due marker; status flag false")
+
+
 if __name__ == "__main__":
     test_worker_drains_and_advances_watermark()
     test_worker_no_pending_file()
@@ -582,4 +607,5 @@ if __name__ == "__main__":
     test_worker_traversal_date_never_escapes_vault()
     test_worker_malformed_date_replaced_with_today()
     test_worker_consolidation_marker_and_counter_reset()
+    test_consolidation_reset_clears_due_marker()
     print("\n🎉 All worker tests passed!")
