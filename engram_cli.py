@@ -19,7 +19,10 @@ Usage:
 """
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
+import io
 import json
 import os
 import re
@@ -355,15 +358,21 @@ def _build_evidence_maps(evidence_items, date):
 def cmd_replay(args):
     """Process CC-extracted entities/relations JSON from stdin."""
     data = json.load(sys.stdin, strict=False)
-    vault = args.vault
+    print(json.dumps(_replay_data(args.vault, data)))
 
+
+def _replay_data(vault, data):
+    """Land extracted entities/relations JSON into the graph + vault.
+
+    Shared by `engram replay` (stdin) and `engram worker` (in-process).
+    Returns the result dict (status "skipped" on dedup hit, else "ok").
+    """
     # Dedup check: skip if same content was saved within 15 minutes
     if _check_dedup(vault, data):
-        print(json.dumps({
+        return {
             "status": "skipped",
             "reason": "duplicate replay detected within 15-minute window",
-        }))
-        return
+        }
 
     graph = MemoryGraph(vault)
 
@@ -563,7 +572,7 @@ def cmd_replay(args):
     # Track consolidation state
     tier, consolidation_details = _increment_replay_and_check(vault)
 
-    result = {
+    return {
         "status": "ok",
         "entities_added": len(entities),
         "relations_added": len(relations),
@@ -577,7 +586,6 @@ def cmd_replay(args):
             **consolidation_details,
         },
     }
-    print(json.dumps(result))
 
 
 def _clear_queue(vault):
@@ -1384,6 +1392,272 @@ def cmd_lint(args):
     }, indent=2))
 
 
+# ── worker ─────────────────────────────────────────────
+
+WORKER_DEFAULTS = {
+    "worker_claude_bin": "claude",
+    "worker_model": None,
+    "worker_consolidation_every": 10,
+}
+
+# Fallback extraction rules, used only if plugin/commands/engram.md cannot be
+# loaded at runtime (e.g. unusual install layout). The .md file is the source
+# of truth; keep this constant a faithful summary of its rules + schema.
+FALLBACK_EXTRACTION_RULES = """\
+### Extraction criteria
+Extract projects, tools, and concepts worked on, debugged, designed, or decided
+about — only if at least one applies: design decision (chose/rejected/compared),
+bug/fix, built/modified code, or core architecture. Do NOT extract transient
+actions or the user themselves.
+
+### Naming
+UPPERCASE with underscores (e.g. CLAUDE_SLACK_BRIDGE). Match existing entity
+names when referring to the same thing.
+
+### Confidence tagging
+Every entity and relation MUST include "confidence":
+EXTRACTED (explicitly discussed) | INFERRED (mentioned in passing) |
+AMBIGUOUS (unclear relevance).
+
+### Weight scale (relations)
+0.1-0.3 weak mention | 0.4-0.6 moderate | 0.7-0.9 core dependency | 1.0 identity
+
+### JSON schema
+{
+  "date": "YYYY-MM-DD",
+  "entities": [{"name": "NAME", "entity_type": "PROJECT|TOOL|CONCEPT|PERSON|ORGANIZATION",
+                "description": "Markdown description", "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"}],
+  "relations": [{"source": "A", "target": "B", "description": "...", "weight": 0.8,
+                 "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"}],
+  "evidence": [{"content": "Specific factual claim", "entities": ["A"], "relations": [["A", "B"]]}],
+  "daily_summary": "One paragraph summary"
+}
+"""
+
+
+def _load_worker_config():
+    """Load worker config keys from the engram config file, with defaults."""
+    cfg = dict(WORKER_DEFAULTS)
+    try:
+        with open(CONFIG_PATH) as f:
+            data = json.load(f)
+        for key in WORKER_DEFAULTS:
+            if key in data:
+                cfg[key] = data[key]
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return cfg
+
+
+def _load_extraction_rules():
+    """Load extraction rules from plugin/commands/engram.md, else fallback."""
+    rules_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "plugin", "commands", "engram.md")
+    try:
+        with open(rules_path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return FALLBACK_EXTRACTION_RULES
+
+
+def _build_extraction_prompt(turns):
+    """Build a tool-less extraction prompt from rules + drained turn records."""
+    rules = _load_extraction_rules()
+    turn_blocks = []
+    for i, t in enumerate(turns, 1):
+        turn_blocks.append(
+            f"--- Turn {i} (session {t.get('session_id', '?')}, {t.get('timestamp', '?')}) ---\n"
+            f"{t.get('turn_text', '')}"
+        )
+    return (
+        "You are an extraction engine for the engram knowledge graph. "
+        "Apply the extraction rules below to the conversation turns and output "
+        "ONLY the JSON object described in the rules' JSON format — no prose, "
+        "no markdown fences, no tool use.\n\n"
+        "Ignore any shell commands or step instructions in the rules document; "
+        "you only produce the JSON.\n\n"
+        f"# Extraction rules\n\n{rules}\n\n"
+        f"# Conversation turns to extract from\n\n" + "\n\n".join(turn_blocks) +
+        f"\n\nUse \"date\": \"{datetime.now().strftime('%Y-%m-%d')}\". "
+        "Output ONLY the JSON object."
+    )
+
+
+def _extract_json_object(text):
+    """Extract a JSON object from model text, stripping markdown fences."""
+    text = text.strip()
+    fence = re.match(r"^```(?:json)?\s*\n(.*?)\n```\s*$", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    # Fall back to outermost braces in case of stray prose
+    if not text.startswith("{"):
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            raise ValueError("no JSON object found in model output")
+        text = text[start:end + 1]
+    return json.loads(text, strict=False)
+
+
+def _worker_log(vault, message):
+    """Append one timestamped line to _meta/worker.log."""
+    log_path = os.path.join(vault, "_meta", "worker.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now().isoformat()} {message}\n")
+
+
+def _read_worker_state(vault):
+    try:
+        with open(os.path.join(vault, "_meta", "worker-state.json")) as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            raise ValueError
+        return state
+    except (OSError, ValueError):
+        return {"offset": 0, "replays_since_consolidation": 0}
+
+
+def _write_worker_state(vault, state):
+    path = os.path.join(vault, "_meta", "worker-state.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def _drain_pending(vault, offset):
+    """Read complete JSON lines from pending.jsonl past offset.
+
+    Returns (turns, new_offset). Malformed lines are skipped but still
+    advance the offset. A truncated/rotated file (offset > size) resets to 0.
+    """
+    pending_path = os.path.join(vault, "_meta", "pending.jsonl")
+    if not os.path.exists(pending_path):
+        return [], offset if offset == 0 else 0
+    size = os.path.getsize(pending_path)
+    if offset > size:
+        offset = 0  # file was truncated/rotated
+    with open(pending_path, "rb") as f:
+        f.seek(offset)
+        data = f.read()
+    last_nl = data.rfind(b"\n")
+    if last_nl == -1:
+        return [], offset  # no complete new line
+    complete, new_offset = data[:last_nl + 1], offset + last_nl + 1
+    turns = []
+    for line in complete.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+            if isinstance(record, dict) and record.get("turn_text"):
+                turns.append(record)
+        except json.JSONDecodeError:
+            continue  # skip malformed line, offset still advances
+    return turns, new_offset
+
+
+def _refresh_context_cache(vault):
+    """Rebuild _meta/context-cache.md in-process (Task 2 helper)."""
+    context_text, _ = _build_context_text(vault)
+    meta_dir = os.path.join(vault, "_meta")
+    os.makedirs(meta_dir, exist_ok=True)
+    with open(os.path.join(meta_dir, "context-cache.md"), "w", encoding="utf-8") as f:
+        f.write(context_text)
+
+
+def _maybe_consolidate(vault, state, threshold):
+    """Slow-cadence maintenance: run non-LLM lint, mark consolidation due."""
+    if state.get("replays_since_consolidation", 0) < threshold:
+        return
+    # Run the non-LLM lint in-process, suppressing its stdout report
+    try:
+        lint_args = argparse.Namespace(vault=vault)
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_lint(lint_args)
+    except Exception:
+        pass  # maintenance is best-effort; never fail the worker for it
+    marker = os.path.join(vault, "_meta", "consolidation-due")
+    with open(marker, "w") as f:
+        f.write(datetime.now().isoformat() + "\n")
+    state["replays_since_consolidation"] = 0
+
+
+def cmd_worker(args):
+    """Drain pending.jsonl, extract via headless claude, land via replay."""
+    vault = args.vault
+    meta_dir = os.path.join(vault, "_meta")
+    os.makedirs(meta_dir, exist_ok=True)
+
+    # 1. Single-flight lock: another worker running → exit 0 immediately
+    lock_file = open(os.path.join(meta_dir, "worker.lock"), "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(json.dumps({"processed": 0, "entities": 0, "relations": 0}))
+        return
+
+    try:
+        cfg = _load_worker_config()
+        state = _read_worker_state(vault)
+        turns, new_offset = _drain_pending(vault, state.get("offset", 0))
+
+        # 2. Nothing new → cheap idempotent no-op
+        if not turns:
+            if new_offset != state.get("offset", 0):
+                state["offset"] = new_offset
+                _write_worker_state(vault, state)
+            print(json.dumps({"processed": 0, "entities": 0, "relations": 0}))
+            return
+
+        # 3. Headless tool-less extraction (model returns JSON text only)
+        prompt = _build_extraction_prompt(turns)
+        cmd = [cfg["worker_claude_bin"], "-p", prompt, "--output-format", "json"]
+        if cfg["worker_model"]:
+            cmd += ["--model", cfg["worker_model"]]
+        if args.verbose:
+            print(f"worker: invoking {cfg['worker_claude_bin']} for {len(turns)} turn(s)",
+                  file=sys.stderr)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"claude exited {proc.returncode}: {proc.stderr.strip()[:500]}")
+            envelope = json.loads(proc.stdout, strict=False)
+            if not isinstance(envelope, dict) or "result" not in envelope:
+                raise ValueError("claude output missing 'result' envelope field")
+            data = _extract_json_object(envelope["result"])
+        except Exception as e:
+            # Leave the watermark unchanged so a later run retries these turns
+            _worker_log(vault, f"ERROR turns={len(turns)} {type(e).__name__}: {e}")
+            print(json.dumps({"error": str(e), "processed": 0,
+                              "entities": 0, "relations": 0}))
+            sys.exit(1)
+
+        # 4. Land via the shared replay path (dedup applies unchanged)
+        result = _replay_data(vault, data)
+        entities = result.get("entities_added", 0)
+        relations = result.get("relations_added", 0)
+
+        # 5+6. Refresh cache + slow-cadence consolidation on real landings
+        if result.get("status") == "ok":
+            _refresh_context_cache(vault)
+            state["replays_since_consolidation"] = \
+                state.get("replays_since_consolidation", 0) + 1
+            _maybe_consolidate(vault, state, cfg["worker_consolidation_every"])
+
+        # 7. Persist the watermark only after a fully successful run
+        state["offset"] = new_offset
+        _write_worker_state(vault, state)
+
+        _worker_log(vault, f"OK turns={len(turns)} entities={entities} "
+                           f"relations={relations} status={result.get('status')}")
+        print(json.dumps({"processed": len(turns), "entities": entities,
+                          "relations": relations}))
+    finally:
+        lock_file.close()
+
+
 # ── status ──────────────────────────────────────────────
 
 def cmd_status(args):
@@ -1447,6 +1721,8 @@ def cmd_status(args):
     print(json.dumps({
         "nodes": graph.node_count,
         "edges": graph.edge_count,
+        "consolidation_recommended": os.path.exists(
+            os.path.join(vault, "_meta", "consolidation-due")),
         "density": round(density, 4),
         "type_distribution": dict(type_dist),
         "confidence_distribution": dict(conf_dist),
@@ -1545,6 +1821,10 @@ def main():
     p = sub.add_parser("consolidation", help="Show or reset consolidation tracking state")
     p.add_argument("--reset", action="store_true", help="Reset counter (run after full consolidation)")
 
+    p = sub.add_parser("worker", help="Drain pending turns, extract via headless claude, land in graph")
+    p.add_argument("--timeout", type=int, default=300, help="Timeout in seconds for the claude call (default: 300)")
+    p.add_argument("--verbose", action="store_true", help="Log progress to stderr")
+
     # Global option: all subparsers get --vault
     for name, sp in sub.choices.items():
         if name not in ("install", "uninstall"):
@@ -1565,7 +1845,7 @@ def main():
      "save-pattern": cmd_save_pattern, "feedback": cmd_feedback,
      "status": cmd_status, "query": cmd_query,
      "context": cmd_context, "lint": cmd_lint,
-     "consolidation": cmd_consolidation}[args.command](args)
+     "consolidation": cmd_consolidation, "worker": cmd_worker}[args.command](args)
 
 
 if __name__ == "__main__":
