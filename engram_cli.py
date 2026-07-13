@@ -391,7 +391,7 @@ def _replay_data(vault, data):
     entities = data.get("entities", [])
     relations = data.get("relations", [])
     evidence_items = data.get("evidence", [])
-    date = data.get("date", datetime.now().strftime("%Y-%m-%d"))
+    date = _sanitize_extraction_date(data.get("date"))
     summary = data.get("daily_summary", "")
 
     # Build evidence maps: entity/relation → wikilink refs
@@ -1512,6 +1512,23 @@ def _extract_json_object(text):
             raise ValueError("no JSON object found in model output")
         text = text[start:end + 1]
     return json.loads(text, strict=False)
+
+
+EXTRACTION_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _sanitize_extraction_date(date):
+    """Return date if it is a strict YYYY-MM-DD string, else today's date.
+
+    The date comes verbatim from model-extracted JSON and is joined into the
+    daily-note path, so anything else (e.g. a prompt-injected "../../evil")
+    must never reach os.path.join. Replacing with today — rather than failing
+    the extraction — keeps an otherwise-valid batch landing instead of
+    retrying forever with the same poisoned field.
+    """
+    if isinstance(date, str) and EXTRACTION_DATE_RE.match(date):
+        return date
+    return datetime.now().strftime("%Y-%m-%d")
 
 
 def _validate_extraction(data):

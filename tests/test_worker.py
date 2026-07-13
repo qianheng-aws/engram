@@ -490,6 +490,57 @@ def test_worker_default_batch_cap_is_20():
         print("  ✅ worker: default cap of 20 turns per run")
 
 
+# ── model-controlled date sanitization ────────────────────
+
+def test_worker_traversal_date_never_escapes_vault():
+    """A prompt-injected date like ../../pwned must never create a file
+    outside the vault; the extraction still lands under today's date."""
+    import datetime as _dt
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        evil = dict(EXTRACTION)
+        evil["date"] = "../../pwned"
+        fake = _write_fake_claude(tmpdir, extraction=evil)
+        config = _write_config(tmpdir, vault, fake)
+        _seed_pending(vault, n=1)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["processed"] == 1
+
+        # Nothing escaped the vault (tmpdir contains vault + fake + config
+        # + capture files only; no pwned.md anywhere outside vault/)
+        for root, _dirs, files in os.walk(tmpdir):
+            for name in files:
+                path = os.path.join(root, name)
+                assert "pwned" not in path, f"traversal escaped vault: {path}"
+
+        # Extraction landed under today's date instead
+        today = _dt.datetime.now().strftime("%Y-%m-%d")
+        assert os.path.exists(os.path.join(vault, "daily", f"{today}.md"))
+        status = _run_cli(["status"], vault, config)
+        assert "WORKER_ENTITY_A" in status["entities"]
+        print("  ✅ worker: traversal date sanitized to today, nothing escapes vault")
+
+
+def test_worker_malformed_date_replaced_with_today():
+    """Any date not matching YYYY-MM-DD is replaced with today's date."""
+    import datetime as _dt
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        weird = dict(EXTRACTION)
+        weird["date"] = "2026-7-13/../oops"
+        fake = _write_fake_claude(tmpdir, extraction=weird)
+        config = _write_config(tmpdir, vault, fake)
+        _seed_pending(vault, n=1)
+
+        _run_worker(vault, config, check=True)
+        today = _dt.datetime.now().strftime("%Y-%m-%d")
+        daily_dir = os.path.join(vault, "daily")
+        assert sorted(os.listdir(daily_dir)) == [f"{today}.md"]
+        print("  ✅ worker: malformed date replaced with today")
+
+
 # ── consolidation hook ────────────────────────────────────
 
 def test_worker_consolidation_marker_and_counter_reset():
@@ -528,5 +579,7 @@ if __name__ == "__main__":
     test_worker_giant_backlog_does_not_hit_argv_limit()
     test_worker_batch_cap_bounds_each_run()
     test_worker_default_batch_cap_is_20()
+    test_worker_traversal_date_never_escapes_vault()
+    test_worker_malformed_date_replaced_with_today()
     test_worker_consolidation_marker_and_counter_reset()
     print("\n🎉 All worker tests passed!")
