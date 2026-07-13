@@ -214,6 +214,13 @@ def main():
             _spawn_worker(vault_dir)
 
         elif event_type_lower == "sessionend":
+            # Consume the hook payload so the writer never blocks on a full
+            # pipe; the payload itself is not needed on this path.
+            try:
+                sys.stdin.read()
+            except Exception:
+                pass
+
             # SessionEnd: spawn worker if there's unprocessed content
             if _has_unprocessed_content(vault_dir):
                 _spawn_worker(vault_dir)
