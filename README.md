@@ -17,31 +17,29 @@
 
 ## ✨ What It Does
 
-You work in Claude Code as usual. When you're done, run `/engram`. That's it.
+You work in Claude Code as usual. Engram captures, extracts, and retrieves your knowledge automatically.
 
-```
-You: /engram
+**Automatic flow:**
+- **Capture** — Every session is appended to a queue as you work
+- **Extraction** — A background worker extracts entities and relations (no API keys, CC does it)
+- **Retrieval** — Every prompt gets relevant context from your knowledge graph injected automatically
 
-CC: Analyzing session... Found 5 entities, 3 relations.
-    ✅ Saved to vault: STDERR_PIPE_BLOCKING, CLAUDE_SLACK_BRIDGE, ...
-    📝 Daily note: 2026-04-06.md
-```
+No manual `/engram` needed. Your knowledge accumulates across sessions and gets injected into future sessions automatically.
+
+Optional power-user commands:
+- `/engram` — Deep extraction with the full interactive model (instead of the background worker)
+- `/engram-full` — Full 6-stage consolidation (feedback, integrate, prune, community, abstract, lint)
+- `/engram-query <question>` — Manual search when you want to see the results directly
 
 Behind the scenes:
 
 ```
-CC Session → /engram → Entity Extraction → Knowledge Graph → Obsidian Vault
-                        (CC as LLM)        (NetworkX)       (Markdown + [[wikilinks]])
-```
-
-Your knowledge accumulates across sessions. Query it anytime:
-
-```
-You: /engram-query how did I fix the stderr bug?
-
-CC: Found STDERR_PIPE_BLOCKING → Bug where claude process stderr fills 64KB
-    pipe buffer, blocking stdout. Fixed by adding _drain_stderr async task.
-    Related: [[CLAUDE_SLACK_BRIDGE]]
+CC Session → Stop hook → pending.jsonl → engram worker → Entity Extraction → Knowledge Graph
+                                          (headless CC)    (NetworkX)        (Markdown)
+                                                                ↓
+                                                        context-cache.md
+                                                                ↓
+          UserPromptSubmit hook → Memory Context (digest + query) → injected into next prompt
 ```
 
 ## 🏗️ Architecture
@@ -87,11 +85,11 @@ claude plugin marketplace add ./
 claude plugin install engram@engram-echo
 ```
 
-Vault, config, and CLAUDE.md prompt all auto-initialize on first use.
+Vault, config, and CLAUDE.md prompt all auto-initialize on first use. Auto-capture is **enabled by default**.
 
 Optional:
 - `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
-- `engram auto on` — auto-capture sessions on exit
+- `engram auto off` — disable auto-capture (turn it back on with `engram auto on`)
 
 ## 🔄 Updating
 
@@ -122,35 +120,36 @@ claude plugin update engram@engram-echo
 
 ## 🎮 Commands
 
+Engram works automatically — no manual commands needed for routine sessions.
+
+**Optional power-user commands:**
+
 | Command | Description |
 |:--------|:------------|
-| `/engram` | Extract entities and relations from current session |
+| `/engram` | Deep extraction with full interactive model (instead of background worker) |
 | `/engram-full` | Full consolidation: replay → feedback → integrate → prune → community → abstract → lint |
 | `/engram-feedback` | Process human corrections from Obsidian callouts |
 | `/engram-community` | Detect and summarize knowledge clusters (Louvain) |
-| `/engram-status` | Show vault statistics, graph analysis, and pending sessions |
+| `/engram-status` | Show vault statistics, graph analysis |
 | `/engram-query <question>` | Search knowledge graph (keyword + graph traversal) |
-| `/engram-on` | Enable auto-capture on session end |
+| `/engram-on` | Enable auto-capture (default: on) |
 | `/engram-off` | Disable auto-capture |
 
-### `/engram` vs `/engram-full`
+### Automatic flow vs manual commands
 
-| | `/engram` | `/engram-full` |
-|:--|:---------|:--------------|
-| Stages | Replay only | All 6 stages + lint |
-| Speed | Fast (one extraction) | Slower (multi-step) |
-| When | Every session | Auto-triggered when needed |
+| | Automatic (background worker) | Manual `/engram` | `/engram-full` |
+|:--|:------------------------------|:-----------------|:---------------|
+| Trigger | Every session (Stop/SessionEnd hook) | On-demand | On-demand |
+| Model | Headless tool-less CC (`claude -p`) | Full interactive model | Full interactive model |
+| Stages | Replay only | Replay only | All 6 stages + lint |
+| Speed | Fast, runs in background | Fast (one extraction) | Slower (multi-step) |
+| When to use | Runs automatically | Deep extraction, or override auto | Consolidation maintenance |
 
-**Auto-consolidation:** After each `/engram`, the CLI tracks how many replays have occurred since the last full run. When thresholds are reached, `/engram` will remind you (tier 1) or automatically escalate to a full consolidation (tier 2). Thresholds are configurable in `~/.engram/config.json`:
+**Auto-consolidation:** The background worker tracks how many replays have occurred since the last full run. When thresholds are reached, a marker file `_meta/consolidation-due` is created to remind you to run `/engram-full`. Thresholds are configurable in `~/.engram/config.json`:
 
 ```json
 {
-  "consolidation": {
-    "remind_after_replays": 10,
-    "remind_after_days": 7,
-    "force_after_replays": 15,
-    "force_after_days": 14
-  }
+  "worker_consolidation_every": 10
 }
 ```
 
@@ -219,7 +218,15 @@ Open the vault in [Obsidian](https://obsidian.md) to get an interactive knowledg
 ├── 📁 groups/                # Hyperedge MOC (Map of Content) files
 ├── 📁 daily/                 # Session summaries by date
 ├── 📁 patterns/              # Discovered behavioral patterns
-└── 📁 _meta/                 # System data (GraphML, queue, lock)
+└── 📁 _meta/                 # System data
+    ├── pending.jsonl         #   Queue of captured turns (watermark-based)
+    ├── worker-state.json     #   Worker offset + consolidation counter
+    ├── context-cache.md      #   Stable digest for UserPromptSubmit injection
+    ├── worker.log            #   Worker run log (timestamped entries)
+    ├── worker.lock           #   Single-flight lock (fcntl.LOCK_EX)
+    ├── consolidation-due     #   Marker file when consolidation threshold reached
+    ├── hook-enabled          #   Kill switch for hooks (auto on/off)
+    └── graph.graphml         #   NetworkX GraphML
 ```
 
 ### Entity Example
@@ -266,10 +273,23 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ## 🛠️ CLI Reference
 
 ```bash
+# Setup
 engram init [PATH]                              # Initialize vault + register in ~/.claude/CLAUDE.md
-engram auto [on|off|status]                     # Toggle auto-capture on session end
+engram auto [on|off|status]                     # Toggle auto-capture (default: on)
+engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
+engram uninstall                                # Remove from ~/.claude/CLAUDE.md
+
+# Background worker
+engram worker                                   # Drain pending.jsonl, extract, replay
+                                                # (auto-spawned by hooks, rarely invoked manually)
+
+# Query and context
 engram status                                   # Vault statistics + hub entities + density
 engram query --question "..."                   # Search graph
+engram context                                  # Compact summary for system prompt injection
+engram context --write-cache                    # Rebuild _meta/context-cache.md
+
+# Manual extraction and consolidation
 engram replay --stdin                           # Process extracted entity/relation JSON
 engram integrate                                # Detect duplicate entities
 echo '<json>' | engram integrate --stdin        # Execute merges
@@ -281,14 +301,29 @@ engram abstract                                 # Gather data for pattern discov
 echo '<json>' | engram save-pattern --stdin     # Save discovered patterns
 engram feedback                                 # Scan entity files for correction callouts
 echo '<json>' | engram feedback --stdin         # Apply corrections/merges/deletes
-engram context                                  # Compact summary for system prompt injection
 engram lint                                     # Validate vault consistency
 engram consolidation                            # Show consolidation tracking state
 engram consolidation --reset                    # Reset counter (after full consolidation)
-engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
-engram uninstall                                # Remove from ~/.claude/CLAUDE.md
+
 # All commands use the vault from last `engram init`. Override with --vault PATH.
 ```
+
+### Config keys (`~/.engram/config.json`)
+
+```json
+{
+  "vault": "~/.engram/vault",
+  "worker_claude_bin": "claude",
+  "worker_model": null,
+  "worker_consolidation_every": 10,
+  "context_max_chars": 2000
+}
+```
+
+- `worker_claude_bin` — Path to `claude` binary for headless extraction (default: `"claude"`)
+- `worker_model` — Model override for worker (default: `null`, inherits from CC session)
+- `worker_consolidation_every` — Mark consolidation-due after N replays (default: `10`)
+- `context_max_chars` — Max chars in UserPromptSubmit injection (default: `2000`)
 
 ## 📄 License
 
