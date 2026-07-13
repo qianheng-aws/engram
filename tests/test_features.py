@@ -712,22 +712,22 @@ def test_engram_hook_uses_config_vault():
         )
         assert result.returncode == 0, f"stderr: {result.stderr}"
 
-        # Check: queue file should be in custom vault, NOT in default
-        custom_queue = os.path.join(custom_vault, "_meta", "queue")
-        default_queue = os.path.join(tmpdir, ".engram", "vault", "_meta", "queue")
+        # Check: pending.jsonl should be in custom vault, NOT in default
+        custom_pending = os.path.join(custom_vault, "_meta", "pending.jsonl")
+        default_pending = os.path.join(tmpdir, ".engram", "vault", "_meta", "pending.jsonl")
 
-        custom_has_files = os.path.isdir(custom_queue) and len(os.listdir(custom_queue)) > 0
-        default_has_files = os.path.isdir(default_queue) and len(os.listdir(default_queue)) > 0
+        custom_has_pending = os.path.exists(custom_pending)
+        default_has_pending = os.path.exists(default_pending)
 
-        if default_has_files and not custom_has_files:
+        if default_has_pending and not custom_has_pending:
             print("  ❌ BUG: engram-hook wrote to hardcoded default, not config vault")
             assert False, "engram-hook ignores config.json, uses hardcoded vault path"
-        elif custom_has_files:
+        elif custom_has_pending:
             print("  ✅ engram-hook reads vault from config.json")
         else:
             # Might not have written if hook-enabled check failed
             print("  ⚠️  engram-hook wrote to neither location (check hook-enabled flag)")
-            assert False, "Hook did not write queue file to either location"
+            assert False, "Hook did not write pending.jsonl to either location"
 
 
 # ── Test knowledge gaps ──────────────────────────────────
