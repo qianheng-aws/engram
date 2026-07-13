@@ -320,6 +320,7 @@ engram consolidation --reset                    # Reset counter (after full cons
   "worker_claude_bin": "claude",
   "worker_model": null,
   "worker_consolidation_every": 10,
+  "worker_max_turns_per_run": 20,
   "context_max_chars": 2000
 }
 ```
@@ -327,6 +328,7 @@ engram consolidation --reset                    # Reset counter (after full cons
 - `worker_claude_bin` — Path to `claude` binary for headless extraction (default: `"claude"`)
 - `worker_model` — Model override for worker (default: `null`, inherits from CC session)
 - `worker_consolidation_every` — Mark consolidation-due after N replays (default: `10`)
+- `worker_max_turns_per_run` — Max queued turns extracted per worker run; leftovers drain on the next spawn (default: `20`)
 - `context_max_chars` — Max chars in UserPromptSubmit injection (default: `2000`)
 
 ## 📄 License
