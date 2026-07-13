@@ -14,7 +14,17 @@ from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("ENGRAM_CONFIG", str(Path.home() / ".engram" / "config.json")))
 FALLBACK_VAULT = Path.home() / ".engram" / "vault"
+# Hard cap on stored turn_text so pending.jsonl cannot balloon; ~20k chars is
+# plenty of context for extraction while keeping each append cheap.
 MAX_TURN_TEXT = 20000
+TRUNCATION_MARKER = "\n\n[...truncated]"
+
+
+def _cap_turn_text(text):
+    """Cap text so the result (marker included) is at most MAX_TURN_TEXT chars."""
+    if len(text) > MAX_TURN_TEXT:
+        return text[: MAX_TURN_TEXT - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+    return text
 
 
 def _get_vault():
@@ -57,25 +67,20 @@ def _extract_full_turn(transcript_path):
         if not entries:
             return None
 
-        # Concatenate text from user message onwards
+        # Concatenate non-empty text from user message onwards; guard against
+        # empty/whitespace-only entries producing stray "\n\n" separators.
         turn_parts = []
         for entry in entries:
-            entry_type = entry.get("type", "")
+            if entry.get("type", "") not in ("user", "assistant"):
+                continue
             text = entry.get("text", "")
-            if text and entry_type in ("user", "assistant"):
-                turn_parts.append(text)
+            if isinstance(text, str) and text.strip():
+                turn_parts.append(text.strip())
 
         if not turn_parts:
             return None
 
-        turn_text = "\n\n".join(turn_parts)
-
-        # Cap at MAX_TURN_TEXT
-        if len(turn_text) > MAX_TURN_TEXT:
-            # Truncate from the end with a marker
-            turn_text = turn_text[:MAX_TURN_TEXT] + "\n\n[...truncated]"
-
-        return turn_text
+        return _cap_turn_text("\n\n".join(turn_parts))
     except Exception:
         # Fail silent on any error
         return None
@@ -111,10 +116,7 @@ def main():
         transcript_path = payload.get("transcript_path")
         turn_text = _extract_full_turn(transcript_path)
         if turn_text is None:
-            turn_text = last_message
-            # Cap fallback as well
-            if len(turn_text) > MAX_TURN_TEXT:
-                turn_text = turn_text[:MAX_TURN_TEXT] + "\n\n[...truncated]"
+            turn_text = _cap_turn_text(last_message)
 
         # Build record for pending.jsonl
         record = {

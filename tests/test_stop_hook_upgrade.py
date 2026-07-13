@@ -6,8 +6,6 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 
 def _make_vault(tmpdir):
     vault = os.path.join(tmpdir, "vault")
@@ -352,10 +350,10 @@ def test_stop_hook_turn_text_capped():
             lines = f.readlines()
         record = json.loads(lines[0])
         turn_text = record["turn_text"]
-        # Should be capped
-        assert len(turn_text) <= 20100, f"turn_text too long: {len(turn_text)} chars"
+        # Should be capped at the 20,000 char limit (marker included)
+        assert len(turn_text) <= 20000, f"turn_text too long: {len(turn_text)} chars"
         # Should contain truncation marker
-        assert "..." in turn_text or "[truncated]" in turn_text.lower()
+        assert "[...truncated]" in turn_text
         print("  ✅ stop hook caps turn_text at reasonable limit")
 
 
