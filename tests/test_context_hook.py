@@ -565,6 +565,99 @@ ENDJSON
         print("  ✅ context hook falls back to subprocess when index missing")
 
 
+def _run_hook_with_index_bytes(index_bytes, prompt="Tell me about the flow framework"):
+    """Helper: run the hook with a raw entity-index.json payload and no engram on PATH.
+
+    Returns the CompletedProcess. Digest cache is always seeded.
+    """
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
+
+        with open(os.path.join(vault, "_meta", "context-cache.md"), "w") as f:
+            f.write("**Digest:** General vault overview.")
+
+        with open(os.path.join(vault, "_meta", "entity-index.json"), "wb") as f:
+            f.write(index_bytes)
+
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault}, f)
+
+        payload = json.dumps({"prompt": prompt})
+        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": "/usr/bin:/bin"}
+
+        return subprocess.run(
+            [sys.executable, hook_path],
+            input=payload, capture_output=True, text=True,
+            env=env,
+        )
+
+
+def test_context_hook_index_entities_wrong_shape():
+    """Valid JSON but 'entities' is a list → digest still injected, never empty output."""
+    index_bytes = json.dumps({"version": 1, "entities": ["FLOW_FRAMEWORK"]}).encode()
+    result = _run_hook_with_index_bytes(index_bytes)
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "## Memory Context" in result.stdout, "Digest must survive shape-corrupt index"
+    assert "General vault overview" in result.stdout
+    print("  ✅ context hook survives entities-as-list corrupt index (digest kept)")
+
+
+def test_context_hook_index_entity_value_wrong_shape():
+    """Entity value is a string (not dict) → entry skipped, digest still injected."""
+    index_bytes = json.dumps({
+        "version": 1,
+        "entities": {
+            "FLOW_FRAMEWORK": "not a dict",
+            "ML_COMMONS": {"keywords": ["commons"], "snippet": "- ML_COMMONS (PROJECT): ok"},
+        },
+    }).encode()
+    result = _run_hook_with_index_bytes(index_bytes, prompt="Tell me about ml commons flow")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "## Memory Context" in result.stdout, "Digest must survive malformed entry"
+    assert "General vault overview" in result.stdout
+    # Well-formed sibling entry still matches
+    assert "ML_COMMONS" in result.stdout, "Well-formed entries should still match"
+    print("  ✅ context hook skips malformed entity entries, keeps good ones")
+
+
+def test_context_hook_index_non_utf8():
+    """Non-UTF8 bytes in index file → digest still injected, never empty output."""
+    result = _run_hook_with_index_bytes(b'\xff\xfe{"version": 1}')
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "## Memory Context" in result.stdout, "Digest must survive non-UTF8 index"
+    assert "General vault overview" in result.stdout
+    print("  ✅ context hook survives non-UTF8 index file (digest kept)")
+
+
+def test_context_hook_index_fast_path_latency():
+    """Latency sanity (soft): hook with index present and no engram on PATH
+    completes well under 1s; assert generously (<1.5s) to avoid flaky CI."""
+    import time
+
+    index_bytes = json.dumps({
+        "version": 1,
+        "entities": {
+            "FLOW_FRAMEWORK": {
+                "keywords": ["flow", "framework"],
+                "snippet": "- FLOW_FRAMEWORK (PROJECT): workflow engine",
+            },
+        },
+    }).encode()
+
+    start = time.monotonic()
+    result = _run_hook_with_index_bytes(index_bytes)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "FLOW_FRAMEWORK" in result.stdout
+    assert elapsed < 1.5, f"Fast path took {elapsed:.2f}s (expected well under 1s)"
+    print(f"  ✅ context hook fast path latency OK ({elapsed*1000:.0f}ms < 1500ms)")
+
+
 if __name__ == "__main__":
     print("Testing UserPromptSubmit hook (engram-context)...")
     test_context_hook_no_hook_enabled_flag()
@@ -580,4 +673,8 @@ if __name__ == "__main__":
     test_context_hook_entity_index_ranking()
     test_context_hook_junk_prompt_gate()
     test_context_hook_index_fallback_preserved()
+    test_context_hook_index_entities_wrong_shape()
+    test_context_hook_index_entity_value_wrong_shape()
+    test_context_hook_index_non_utf8()
+    test_context_hook_index_fast_path_latency()
     print("\n🎉 All context hook tests passed!")

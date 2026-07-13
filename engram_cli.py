@@ -1683,7 +1683,7 @@ def _build_entity_index(vault):
         if not attrs:
             continue
 
-        # Extract keywords from entity name
+        # Extract keywords from entity name (graph nodes store no alias attr)
         name_tokens = re.split(r'[_\-\s]+', entity_name)
         keywords = []
         for token in name_tokens:
@@ -1691,17 +1691,6 @@ def _build_entity_index(vault):
             token_lower = token.lower()
             if len(token_lower) >= 3 and token_upper not in INDEX_STOP_WORDS:
                 keywords.append(token_lower)
-
-        # Add alias keywords if present
-        alias = attrs.get("alias", "")
-        if alias:
-            alias_tokens = re.split(r'[_\-\s]+', alias)
-            for token in alias_tokens:
-                token_upper = token.upper()
-                token_lower = token.lower()
-                if len(token_lower) >= 3 and token_upper not in INDEX_STOP_WORDS:
-                    if token_lower not in keywords:
-                        keywords.append(token_lower)
 
         # Build snippet: "- NAME (TYPE): description... | related: neighbor1, neighbor2"
         entity_type = attrs.get("entity_type", "?")
