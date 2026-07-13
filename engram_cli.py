@@ -257,14 +257,26 @@ def cmd_auto(args):
     if args.auto_action == "on":
         os.makedirs(os.path.dirname(hook_flag), exist_ok=True)
         open(hook_flag, "w").close()
-        print(json.dumps({"status": "ok", "auto_replay": "enabled"}))
+        print(json.dumps({
+            "status": "ok",
+            "auto_replay": "enabled",
+            "note": "Automatic background extraction enabled (turns captured and processed in background)"
+        }))
     elif args.auto_action == "off":
         if os.path.exists(hook_flag):
             os.remove(hook_flag)
-        print(json.dumps({"status": "ok", "auto_replay": "disabled"}))
+        print(json.dumps({
+            "status": "ok",
+            "auto_replay": "disabled",
+            "note": "Automatic background extraction disabled"
+        }))
     else:
         enabled = os.path.exists(hook_flag)
-        print(json.dumps({"status": "ok", "auto_replay": "enabled" if enabled else "disabled"}))
+        print(json.dumps({
+            "status": "ok",
+            "auto_replay": "enabled" if enabled else "disabled",
+            "note": "Background extraction " + ("active" if enabled else "inactive")
+        }))
 
 
 # ── replay ──────────────────────────────────────────────
