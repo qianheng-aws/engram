@@ -344,6 +344,320 @@ def test_context_hook_cache_hit_still_queries():
         print("  ✅ context hook runs query step on cache hit")
 
 
+def test_context_hook_entity_index_fast_path():
+    """Hook reads entity-index.json directly (no subprocess) and injects matched snippets."""
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
+
+        # Write cache
+        cache_path = os.path.join(vault, "_meta", "context-cache.md")
+        with open(cache_path, "w") as f:
+            f.write("**Digest:** General vault overview.")
+
+        # Write entity-index.json
+        index_data = {
+            "version": 1,
+            "entities": {
+                "FLOW_FRAMEWORK": {
+                    "keywords": ["flow", "framework"],
+                    "snippet": "- FLOW_FRAMEWORK (PROJECT): OpenSearch ML workflow engine | related: ML_COMMONS, OPENSEARCH"
+                },
+                "ML_COMMONS": {
+                    "keywords": ["commons", "machine", "learning"],
+                    "snippet": "- ML_COMMONS (PROJECT): Machine learning library for OpenSearch | related: FLOW_FRAMEWORK"
+                }
+            }
+        }
+        index_path = os.path.join(vault, "_meta", "entity-index.json")
+        with open(index_path, "w") as f:
+            json.dump(index_data, f)
+
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault}, f)
+
+        payload = json.dumps({"prompt": "Tell me about the flow framework"})
+
+        # Use a clean PATH without engram binary (proves no subprocess)
+        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": "/usr/bin:/bin"}
+
+        result = subprocess.run(
+            [sys.executable, hook_path],
+            input=payload, capture_output=True, text=True,
+            env=env,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "## Memory Context" in result.stdout, "Expected Memory Context header"
+        assert "FLOW_FRAMEWORK" in result.stdout, "Expected matched entity snippet"
+        assert "OpenSearch ML workflow engine" in result.stdout, "Expected entity description"
+        print("  ✅ context hook reads entity-index.json (fast path, no subprocess)")
+
+
+def test_context_hook_entity_index_ranking():
+    """Entities with more matching tokens rank higher."""
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
+
+        cache_path = os.path.join(vault, "_meta", "context-cache.md")
+        with open(cache_path, "w") as f:
+            f.write("**Digest:** Brief.")
+
+        index_data = {
+            "version": 1,
+            "entities": {
+                "OPENSEARCH_PLUGIN": {
+                    "keywords": ["opensearch", "plugin"],
+                    "snippet": "- OPENSEARCH_PLUGIN (CONCEPT): Extension mechanism"
+                },
+                "OPENSEARCH": {
+                    "keywords": ["opensearch"],
+                    "snippet": "- OPENSEARCH (TOOL): Search engine"
+                },
+                "PLUGIN_ARCHITECTURE": {
+                    "keywords": ["plugin", "architecture"],
+                    "snippet": "- PLUGIN_ARCHITECTURE (CONCEPT): Design pattern"
+                }
+            }
+        }
+        index_path = os.path.join(vault, "_meta", "entity-index.json")
+        with open(index_path, "w") as f:
+            json.dump(index_data, f)
+
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault}, f)
+
+        # Prompt matches "opensearch" and "plugin" → OPENSEARCH_PLUGIN should rank first (2 matches)
+        payload = json.dumps({"prompt": "opensearch plugin development"})
+
+        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": "/usr/bin:/bin"}
+
+        result = subprocess.run(
+            [sys.executable, hook_path],
+            input=payload, capture_output=True, text=True,
+            env=env,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        # OPENSEARCH_PLUGIN should appear before OPENSEARCH (more matches)
+        output = result.stdout
+        pos_plugin = output.find("OPENSEARCH_PLUGIN")
+        pos_base = output.find("OPENSEARCH (TOOL)")
+        assert pos_plugin > 0 and pos_base > 0, "Both entities should be matched"
+        assert pos_plugin < pos_base, "OPENSEARCH_PLUGIN (2 matches) should appear before OPENSEARCH (1 match)"
+        print("  ✅ context hook ranks entities by match count")
+
+
+def test_context_hook_junk_prompt_gate():
+    """Short prompts with no meaningful tokens (after filtering) → digest-only, no matching attempted."""
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
+
+        cache_path = os.path.join(vault, "_meta", "context-cache.md")
+        with open(cache_path, "w") as f:
+            f.write("**Digest:** General content.")
+
+        index_data = {
+            "version": 1,
+            "entities": {
+                "TEST_ENTITY": {
+                    "keywords": ["test", "entity"],
+                    "snippet": "- TEST_ENTITY (CONCEPT): Should not appear"
+                }
+            }
+        }
+        index_path = os.path.join(vault, "_meta", "entity-index.json")
+        with open(index_path, "w") as f:
+            json.dump(index_data, f)
+
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault}, f)
+
+        # Junk prompt: only short tokens, no tokens ≥ 4 chars after stop-word filtering
+        payload = json.dumps({"prompt": "ok go"})
+
+        # Also create a stub engram that would fail if called (proves no fallback attempted)
+        marker_file = os.path.join(tmpdir, "engram-called")
+        fake_engram_dir = os.path.join(tmpdir, "bin")
+        os.makedirs(fake_engram_dir)
+        fake_engram = os.path.join(fake_engram_dir, "engram")
+        with open(fake_engram, "w") as f:
+            f.write(f"""#!/bin/bash
+touch {marker_file}
+exit 1
+""")
+        os.chmod(fake_engram, 0o755)
+
+        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": f"{fake_engram_dir}:/usr/bin:/bin"}
+
+        result = subprocess.run(
+            [sys.executable, hook_path],
+            input=payload, capture_output=True, text=True,
+            env=env,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        # Digest only, no entity matches
+        assert "General content" in result.stdout, "Digest should be present"
+        assert "TEST_ENTITY" not in result.stdout, "No entity matching for junk prompt"
+        # No subprocess fallback attempted
+        assert not os.path.exists(marker_file), "engram subprocess should not be called for junk prompt"
+        print("  ✅ context hook skips entity matching for junk prompts")
+
+
+def test_context_hook_index_fallback_preserved():
+    """When entity-index.json missing, fallback to engram query subprocess still works."""
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
+
+        cache_path = os.path.join(vault, "_meta", "context-cache.md")
+        with open(cache_path, "w") as f:
+            f.write("**Digest:** General.")
+
+        # NO entity-index.json
+
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault}, f)
+
+        # Create fake engram that returns query result
+        fake_engram_dir = os.path.join(tmpdir, "bin")
+        os.makedirs(fake_engram_dir)
+        fake_engram = os.path.join(fake_engram_dir, "engram")
+        with open(fake_engram, "w") as f:
+            f.write(f"""#!/bin/bash
+cat << 'ENDJSON'
+{{
+  "question": "fallback test",
+  "matched_entities": ["FALLBACK_ENTITY"],
+  "expanded_entities": [],
+  "context": "## FALLBACK_ENTITY\\nFrom subprocess fallback",
+  "community_context": [],
+  "message": "ok"
+}}
+ENDJSON
+""")
+        os.chmod(fake_engram, 0o755)
+
+        payload = json.dumps({"prompt": "Tell me about fallback test"})
+
+        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": f"{fake_engram_dir}:{os.environ.get('PATH', '')}"}
+
+        result = subprocess.run(
+            [sys.executable, hook_path],
+            input=payload, capture_output=True, text=True,
+            env=env,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "FALLBACK_ENTITY" in result.stdout, "Should fall back to engram query subprocess"
+        assert "From subprocess fallback" in result.stdout
+        print("  ✅ context hook falls back to subprocess when index missing")
+
+
+def _run_hook_with_index_bytes(index_bytes, prompt="Tell me about the flow framework"):
+    """Helper: run the hook with a raw entity-index.json payload and no engram on PATH.
+
+    Returns the CompletedProcess. Digest cache is always seeded.
+    """
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
+
+        with open(os.path.join(vault, "_meta", "context-cache.md"), "w") as f:
+            f.write("**Digest:** General vault overview.")
+
+        with open(os.path.join(vault, "_meta", "entity-index.json"), "wb") as f:
+            f.write(index_bytes)
+
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault}, f)
+
+        payload = json.dumps({"prompt": prompt})
+        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": "/usr/bin:/bin"}
+
+        return subprocess.run(
+            [sys.executable, hook_path],
+            input=payload, capture_output=True, text=True,
+            env=env,
+        )
+
+
+def test_context_hook_index_entities_wrong_shape():
+    """Valid JSON but 'entities' is a list → digest still injected, never empty output."""
+    index_bytes = json.dumps({"version": 1, "entities": ["FLOW_FRAMEWORK"]}).encode()
+    result = _run_hook_with_index_bytes(index_bytes)
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "## Memory Context" in result.stdout, "Digest must survive shape-corrupt index"
+    assert "General vault overview" in result.stdout
+    print("  ✅ context hook survives entities-as-list corrupt index (digest kept)")
+
+
+def test_context_hook_index_entity_value_wrong_shape():
+    """Entity value is a string (not dict) → entry skipped, digest still injected."""
+    index_bytes = json.dumps({
+        "version": 1,
+        "entities": {
+            "FLOW_FRAMEWORK": "not a dict",
+            "ML_COMMONS": {"keywords": ["commons"], "snippet": "- ML_COMMONS (PROJECT): ok"},
+        },
+    }).encode()
+    result = _run_hook_with_index_bytes(index_bytes, prompt="Tell me about ml commons flow")
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "## Memory Context" in result.stdout, "Digest must survive malformed entry"
+    assert "General vault overview" in result.stdout
+    # Well-formed sibling entry still matches
+    assert "ML_COMMONS" in result.stdout, "Well-formed entries should still match"
+    print("  ✅ context hook skips malformed entity entries, keeps good ones")
+
+
+def test_context_hook_index_non_utf8():
+    """Non-UTF8 bytes in index file → digest still injected, never empty output."""
+    result = _run_hook_with_index_bytes(b'\xff\xfe{"version": 1}')
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "## Memory Context" in result.stdout, "Digest must survive non-UTF8 index"
+    assert "General vault overview" in result.stdout
+    print("  ✅ context hook survives non-UTF8 index file (digest kept)")
+
+
+def test_context_hook_index_fast_path_latency():
+    """Latency sanity (soft): hook with index present and no engram on PATH
+    completes well under 1s; assert generously (<1.5s) to avoid flaky CI."""
+    import time
+
+    index_bytes = json.dumps({
+        "version": 1,
+        "entities": {
+            "FLOW_FRAMEWORK": {
+                "keywords": ["flow", "framework"],
+                "snippet": "- FLOW_FRAMEWORK (PROJECT): workflow engine",
+            },
+        },
+    }).encode()
+
+    start = time.monotonic()
+    result = _run_hook_with_index_bytes(index_bytes)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "FLOW_FRAMEWORK" in result.stdout
+    assert elapsed < 1.5, f"Fast path took {elapsed:.2f}s (expected well under 1s)"
+    print(f"  ✅ context hook fast path latency OK ({elapsed*1000:.0f}ms < 1500ms)")
+
+
 if __name__ == "__main__":
     print("Testing UserPromptSubmit hook (engram-context)...")
     test_context_hook_no_hook_enabled_flag()
@@ -355,4 +669,12 @@ if __name__ == "__main__":
     test_context_hook_budget_preserves_query_results()
     test_context_hook_cache_miss_skips_query_step()
     test_context_hook_cache_hit_still_queries()
+    test_context_hook_entity_index_fast_path()
+    test_context_hook_entity_index_ranking()
+    test_context_hook_junk_prompt_gate()
+    test_context_hook_index_fallback_preserved()
+    test_context_hook_index_entities_wrong_shape()
+    test_context_hook_index_entity_value_wrong_shape()
+    test_context_hook_index_non_utf8()
+    test_context_hook_index_fast_path_latency()
     print("\n🎉 All context hook tests passed!")

@@ -94,11 +94,90 @@ def _fallback_context(vault_dir):
     return ""
 
 
+def _load_entity_index(vault_dir):
+    """Load entity-index.json if present and well-formed, else return None.
+
+    Returns {entity_name: {"keywords": set, "snippet": str}} with malformed
+    entries skipped, or None (missing/corrupt/wrong-shape file → the caller
+    falls back to the subprocess path instead of aborting the injection).
+    """
+    index_path = vault_dir / "_meta" / "entity-index.json"
+    if not index_path.exists():
+        return None
+    try:
+        with open(index_path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or data.get("version") != 1:
+            return None
+        entities = data.get("entities")
+        if not isinstance(entities, dict):
+            return None
+        # Normalize: skip malformed entries; keywords as a set for O(1) matching
+        index = {}
+        for name, entry in entities.items():
+            if not isinstance(entry, dict):
+                continue
+            keywords = entry.get("keywords")
+            snippet = entry.get("snippet")
+            if not isinstance(keywords, list) or not isinstance(snippet, str):
+                continue
+            index[name] = {
+                "keywords": {kw for kw in keywords if isinstance(kw, str)},
+                "snippet": snippet,
+            }
+        return index
+    except (ValueError, OSError):
+        # ValueError covers JSONDecodeError and UnicodeDecodeError (non-UTF8
+        # bytes); OSError covers IOError. Corrupt file → fall back.
+        return None
+
+
+def _match_entities_from_index(index, prompt_tokens):
+    """Match entities from index based on prompt tokens.
+
+    Index entries are pre-normalized by _load_entity_index (keywords: set,
+    snippet: str). Returns list of (entity_name, match_count, snippet) tuples,
+    ranked by match_count desc.
+    """
+    if not prompt_tokens:
+        return []
+
+    scored = []
+    for entity_name, entity_data in index.items():
+        keywords = entity_data["keywords"]
+        # Count how many prompt tokens match this entity's keywords
+        match_count = sum(1 for token in prompt_tokens if token.lower() in keywords)
+        if match_count > 0:
+            scored.append((entity_name, match_count, entity_data["snippet"]))
+
+    # Sort by match count (descending), take top 5
+    scored.sort(key=lambda x: -x[1])
+    return scored[:5]
+
+
 def _query_subgraph(vault_dir, keywords):
-    """Query for prompt-matched entities."""
+    """Query for prompt-matched entities.
+
+    Fast path: reads entity-index.json (no subprocess).
+    Fallback: shells out to `engram query` if index missing.
+    """
     if not keywords:
         return ""
 
+    # Fast path: try entity-index.json. Any unexpected failure falls through
+    # to the subprocess fallback instead of aborting the whole injection.
+    try:
+        index = _load_entity_index(vault_dir)
+        if index is not None:
+            matches = _match_entities_from_index(index, keywords)
+            if matches:
+                snippets = [snippet for _, _, snippet in matches]
+                return "\n".join(snippets)
+            return ""
+    except Exception:
+        pass
+
+    # Fallback: subprocess query (for vaults whose worker hasn't run since upgrade)
     engram_bin = shutil.which("engram")
     if not engram_bin:
         return ""
@@ -155,14 +234,18 @@ def _build_memory_context(vault_dir, prompt):
         digest = _fallback_context(vault_dir)
         used_fallback = True
 
-    # 2. Prompt-matched subgraph — skipped when the fallback subprocess ran:
-    # two sequential 2.0s subprocess budgets (~4s worst case) would exceed
-    # the 3000ms hooks.json timeout and the whole injection would be lost.
+    # 2. Junk-prompt gate: if the prompt has no meaningful tokens (length ≥ 4
+    # after stop-word filtering), skip entity matching entirely.
+    keywords = _extract_keywords(prompt)
+    has_meaningful_tokens = any(len(kw) >= 4 for kw in keywords)
+
+    # 3. Prompt-matched subgraph — skipped when:
+    #    - the fallback subprocess ran (would exceed hook timeout budget), or
+    #    - junk prompt with no meaningful tokens
     # The fallback digest is freshly built from the full graph, so on a cache
     # miss we settle for the digest alone and stay inside the hook budget.
     query_result = ""
-    if not used_fallback:
-        keywords = _extract_keywords(prompt)
+    if not used_fallback and has_meaningful_tokens:
         query_result = _query_subgraph(vault_dir, keywords)
 
     # If nothing to emit, return empty
