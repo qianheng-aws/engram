@@ -1148,12 +1148,9 @@ def cmd_context(args):
 
     if args.write_cache:
         # Write cache mode: save markdown to _meta/context-cache.md
-        meta_dir = os.path.join(vault, "_meta")
-        os.makedirs(meta_dir, exist_ok=True)
-        cache_path = os.path.join(meta_dir, "context-cache.md")
-
-        with open(cache_path, "w", encoding="utf-8") as f:
-            f.write(context_text)
+        # (atomic tmp + rename so a concurrent prompt hook never reads a
+        # half-written digest)
+        cache_path = _write_context_cache(vault, context_text)
 
         file_size = len(context_text.encode("utf-8"))
         print(json.dumps({
@@ -1642,13 +1639,26 @@ def _drain_pending(vault, offset, max_turns=None):
     return turns, new_offset
 
 
+def _write_context_cache(vault, context_text):
+    """Atomically write _meta/context-cache.md (tmp + rename).
+
+    A concurrent UserPromptSubmit hook reads this file; a plain open("w")
+    could expose a half-written digest mid-injection.
+    """
+    meta_dir = os.path.join(vault, "_meta")
+    os.makedirs(meta_dir, exist_ok=True)
+    cache_path = os.path.join(meta_dir, "context-cache.md")
+    tmp_path = cache_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(context_text)
+    os.rename(tmp_path, cache_path)  # atomic: readers never see a torn cache
+    return cache_path
+
+
 def _refresh_context_cache(vault):
     """Rebuild _meta/context-cache.md in-process (Task 2 helper)."""
     context_text, _ = _build_context_text(vault)
-    meta_dir = os.path.join(vault, "_meta")
-    os.makedirs(meta_dir, exist_ok=True)
-    with open(os.path.join(meta_dir, "context-cache.md"), "w", encoding="utf-8") as f:
-        f.write(context_text)
+    _write_context_cache(vault, context_text)
 
 
 def _maybe_consolidate(vault, state, threshold):

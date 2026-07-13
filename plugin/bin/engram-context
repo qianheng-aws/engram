@@ -150,12 +150,20 @@ def _build_memory_context(vault_dir, prompt):
     """Build full memory context block: digest + query results."""
     # 1. Stable digest (cache or fallback)
     digest = _read_cache(vault_dir)
+    used_fallback = False
     if not digest:
         digest = _fallback_context(vault_dir)
+        used_fallback = True
 
-    # 2. Prompt-matched subgraph
-    keywords = _extract_keywords(prompt)
-    query_result = _query_subgraph(vault_dir, keywords)
+    # 2. Prompt-matched subgraph — skipped when the fallback subprocess ran:
+    # two sequential 2.0s subprocess budgets (~4s worst case) would exceed
+    # the 3000ms hooks.json timeout and the whole injection would be lost.
+    # The fallback digest is freshly built from the full graph, so on a cache
+    # miss we settle for the digest alone and stay inside the hook budget.
+    query_result = ""
+    if not used_fallback:
+        keywords = _extract_keywords(prompt)
+        query_result = _query_subgraph(vault_dir, keywords)
 
     # If nothing to emit, return empty
     if not digest and not query_result:
