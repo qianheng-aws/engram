@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Engram UserPromptSubmit hook — inject memory context on each user prompt.
+
+Emits a Memory Context block composed of:
+1. Stable digest from vault/_meta/context-cache.md (or via `engram context`)
+2. Prompt-matched subgraph from `engram query --question "<keywords>"`
+
+Budget: hard-cap at 2000 chars (configurable), truncate digest first.
+Kill switch: vault/_meta/hook-enabled must exist.
+Fail-silent: any exception → empty stdout, exit 0.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+CONFIG_PATH = Path(os.environ.get("ENGRAM_CONFIG", str(Path.home() / ".engram" / "config.json")))
+FALLBACK_VAULT = Path.home() / ".engram" / "vault"
+DEFAULT_MAX_CHARS = 2000
+SUBPROCESS_TIMEOUT = 2.0  # seconds
+MIN_TOKEN_LEN = 3
+TRUNCATION_MARKER = "…"
+
+# Common stop words to exclude from keyword extraction
+STOP_WORDS = {
+    "THE", "AND", "FOR", "WITH", "FROM", "THAT", "THIS", "HAVE", "HAS",
+    "ARE", "WAS", "WERE", "BEEN", "WILL", "CAN", "COULD", "WOULD", "SHOULD",
+    "ABOUT", "INTO", "THROUGH", "DURING", "BEFORE", "AFTER", "ABOVE", "BELOW",
+    "BETWEEN", "UNDER", "AGAIN", "FURTHER", "THEN", "ONCE", "HERE", "THERE",
+    "WHEN", "WHERE", "WHY", "HOW", "ALL", "EACH", "OTHER", "SOME", "SUCH",
+    "ONLY", "OWN", "SAME", "THAN", "TOO", "VERY", "JUST", "BUT", "NOT",
+}
+
+
+def _get_vault():
+    """Load vault path from config, falling back to default."""
+    try:
+        with open(CONFIG_PATH) as f:
+            return Path(json.load(f).get("vault", str(FALLBACK_VAULT)))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return FALLBACK_VAULT
+
+
+def _get_max_chars(vault_dir):
+    """Load context_max_chars from config, or use default."""
+    try:
+        with open(CONFIG_PATH) as f:
+            config = json.load(f)
+            return config.get("context_max_chars", DEFAULT_MAX_CHARS)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return DEFAULT_MAX_CHARS
+
+
+def _extract_keywords(prompt):
+    """Extract meaningful keywords from prompt (similar to engram-pretool)."""
+    tokens = re.split(r'[^a-zA-Z0-9]+', prompt)
+    tokens = [t.upper() for t in tokens if len(t) >= MIN_TOKEN_LEN]
+    tokens = [t for t in tokens if t not in STOP_WORDS]
+    return list(dict.fromkeys(tokens))  # dedupe, preserve order
+
+
+def _read_cache(vault_dir):
+    """Read stable digest from context-cache.md if present."""
+    cache_path = vault_dir / "_meta" / "context-cache.md"
+    if cache_path.exists():
+        try:
+            return cache_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return ""
+    return ""
+
+
+def _fallback_context(vault_dir):
+    """Shell out to `engram context` as fallback if cache missing."""
+    engram_bin = shutil.which("engram")
+    if not engram_bin:
+        return ""
+
+    try:
+        result = subprocess.run(
+            [engram_bin, "context", "--vault", str(vault_dir)],
+            capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            return data.get("context", "").strip()
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+        pass
+    return ""
+
+
+def _query_subgraph(vault_dir, keywords):
+    """Query for prompt-matched entities."""
+    if not keywords:
+        return ""
+
+    engram_bin = shutil.which("engram")
+    if not engram_bin:
+        return ""
+
+    question = " ".join(keywords[:10])  # limit to first 10 keywords
+
+    try:
+        result = subprocess.run(
+            [engram_bin, "query", "--question", question, "--vault", str(vault_dir)],
+            capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            parts = []
+
+            # Format matched entities
+            matched = data.get("matched_entities", [])
+            if matched:
+                parts.append(f"**Matched:** {', '.join(matched[:5])}")
+
+            # Format expanded entities (1-hop neighbors)
+            expanded = data.get("expanded_entities", [])
+            if expanded:
+                exp_names = [e["name"] for e in expanded[:5]]
+                parts.append(f"**Related:** {', '.join(exp_names)}")
+
+            # Include context details (compact)
+            context = data.get("context", "").strip()
+            if context:
+                # Take first few lines, compact format
+                lines = context.split("\n")
+                compact = []
+                for line in lines[:15]:
+                    line = line.strip()
+                    if line.startswith("##"):
+                        compact.append(line)
+                    elif line and not line.startswith("#"):
+                        compact.append(line)
+                if compact:
+                    parts.append("\n".join(compact))
+
+            return "\n".join(parts) if parts else ""
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
+        pass
+    return ""
+
+
+def _build_memory_context(vault_dir, prompt):
+    """Build full memory context block: digest + query results."""
+    # 1. Stable digest (cache or fallback)
+    digest = _read_cache(vault_dir)
+    if not digest:
+        digest = _fallback_context(vault_dir)
+
+    # 2. Prompt-matched subgraph
+    keywords = _extract_keywords(prompt)
+    query_result = _query_subgraph(vault_dir, keywords)
+
+    # If nothing to emit, return empty
+    if not digest and not query_result:
+        return ""
+
+    # 3. Apply budget: truncate digest first to preserve query results
+    max_chars = _get_max_chars(vault_dir)
+    header = "## Memory Context\n\n"
+    header_len = len(header)
+    available = max_chars - header_len
+
+    if available <= 0:
+        return ""
+
+    query_len = len(query_result)
+    digest_len = len(digest)
+    total_content = query_len + digest_len + (3 if digest and query_result else 0)  # +3 for "\n\n" separator
+
+    if total_content <= available:
+        # Everything fits
+        if digest and query_result:
+            content = f"{digest}\n\n{query_result}"
+        else:
+            content = digest or query_result
+    else:
+        # Need to truncate
+        if query_result:
+            # Preserve query results, truncate digest
+            query_with_sep = query_result
+            remaining_for_digest = available - len(query_with_sep) - 3 - len(TRUNCATION_MARKER)
+            if remaining_for_digest > 50 and digest:
+                # Include truncated digest
+                truncated_digest = digest[:remaining_for_digest] + TRUNCATION_MARKER
+                content = f"{truncated_digest}\n\n{query_with_sep}"
+            else:
+                # Only query results fit
+                if len(query_with_sep) > available - len(TRUNCATION_MARKER):
+                    content = query_with_sep[:available - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+                else:
+                    content = query_with_sep
+        else:
+            # Only digest, truncate it
+            content = digest[:available - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+
+    return header + content
+
+
+def main():
+    try:
+        vault_dir = _get_vault()
+        enabled_flag = vault_dir / "_meta" / "hook-enabled"
+
+        # Kill switch check
+        if not enabled_flag.exists():
+            return
+
+        # Read payload from stdin
+        try:
+            payload = json.load(sys.stdin)
+        except (json.JSONDecodeError, ValueError):
+            return
+
+        prompt = payload.get("prompt", "")
+        if not prompt:
+            return
+
+        # Build and emit memory context
+        memory_context = _build_memory_context(vault_dir, prompt)
+        if memory_context:
+            print(memory_context)
+
+    except Exception:
+        # Fail silent: any exception → empty stdout, exit 0
+        pass
+
+
+if __name__ == "__main__":
+    main()

@@ -24,6 +24,18 @@
                     }
                 ]
             }
+        ],
+        "UserPromptSubmit": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-context",
+                        "timeout": 3000
+                    }
+                ]
+            }
         ]
     }
 }
