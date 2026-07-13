@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Engram hook — fires on CC session Stop.
+"""Engram hook — fires on CC session Stop and SessionEnd.
 
-Saves a breadcrumb to the queue for the next /engram replay.
+Appends full turn (user + assistant) to pending.jsonl for background processing.
+Spawns detached worker to process the queue.
 Uses only Python stdlib — no external dependencies.
 """
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +17,17 @@ from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("ENGRAM_CONFIG", str(Path.home() / ".engram" / "config.json")))
 FALLBACK_VAULT = Path.home() / ".engram" / "vault"
+# Hard cap on stored turn_text so pending.jsonl cannot balloon; ~20k chars is
+# plenty of context for extraction while keeping each append cheap.
+MAX_TURN_TEXT = 20000
+TRUNCATION_MARKER = "\n\n[...truncated]"
+
+
+def _cap_turn_text(text):
+    """Cap text so the result (marker included) is at most MAX_TURN_TEXT chars."""
+    if len(text) > MAX_TURN_TEXT:
+        return text[: MAX_TURN_TEXT - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+    return text
 
 
 def _get_vault():
@@ -25,45 +39,199 @@ def _get_vault():
         return FALLBACK_VAULT
 
 
-def main():
-    event_type = sys.argv[1] if len(sys.argv) > 1 else ""
-    if event_type.lower() != "stop":
-        return
+def _entry_text(entry):
+    """Extract human-readable text from a transcript entry, or "" if none.
 
-    vault_dir = _get_vault()
-    queue_dir = vault_dir / "_meta" / "queue"
-    enabled_flag = vault_dir / "_meta" / "hook-enabled"
+    Handles both a flat {"text": ...} shape and the real Claude Code session
+    format where text nests under message.content: content is either a plain
+    string, or a list of blocks where text lives in {"type": "text",
+    "text": ...} blocks (tool_use / tool_result blocks are skipped).
+    """
+    text = entry.get("text", "")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
 
-    # Check kill switch
-    if not enabled_flag.exists():
-        return
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            block_text = block.get("text", "")
+            if isinstance(block_text, str) and block_text.strip():
+                parts.append(block_text.strip())
+        return "\n\n".join(parts)
+    return ""
 
-    # Read hook payload from stdin
+
+def _extract_full_turn(transcript_path):
+    """Extract the last full turn (user prompt + assistant text) from transcript.
+
+    Returns None if extraction fails for any reason.
+    """
     try:
-        payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        return
+        if not transcript_path or not Path(transcript_path).exists():
+            return None
 
-    session_id = payload.get("session_id", "unknown")
-    last_message = payload.get("last_assistant_message", "")
+        # Read all lines from transcript
+        with open(transcript_path) as f:
+            lines = f.readlines()
 
-    # Skip trivial sessions
-    if not last_message or len(last_message) < 50:
-        return
+        if not lines:
+            return None
 
-    queue_dir.mkdir(parents=True, exist_ok=True)
+        # Walk backwards, collecting non-empty text until the most recent real
+        # user prompt is included. Note: tool_result entries also have type
+        # "user" in real transcripts but carry no prompt text (_entry_text
+        # returns "" for them), so only a user entry WITH text ends the turn.
+        turn_parts = []
+        for line in reversed(lines):
+            try:
+                entry = json.loads(line.strip())
+            except (json.JSONDecodeError, ValueError):
+                continue
+            entry_type = entry.get("type", "")
+            if entry_type not in ("user", "assistant"):
+                continue
+            text = _entry_text(entry)
+            if text:
+                turn_parts.insert(0, text)
+            if entry_type == "user" and text:
+                break
 
-    breadcrumb = {
-        "session_id": session_id,
-        "timestamp": datetime.now().isoformat(),
-        "stop_reason": payload.get("stop_reason", ""),
-        "last_message_preview": last_message[:500],
-        "status": "pending",
-    }
+        if not turn_parts:
+            return None
 
-    queue_file = queue_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{session_id[:8]}.json"
-    with open(queue_file, "w") as f:
-        json.dump(breadcrumb, f, indent=2)
+        return _cap_turn_text("\n\n".join(turn_parts))
+    except Exception:
+        # Fail silent on any error
+        return None
+
+
+def _has_unprocessed_content(vault_dir):
+    """Check if pending.jsonl has unprocessed content.
+
+    Returns True if worker-state offset < pending.jsonl size.
+    """
+    try:
+        pending_file = vault_dir / "_meta" / "pending.jsonl"
+        if not pending_file.exists():
+            return False
+
+        state_file = vault_dir / "_meta" / "worker-state.json"
+        if not state_file.exists():
+            # No state file means nothing processed yet
+            return True
+
+        with open(state_file) as f:
+            state = json.load(f)
+
+        offset = state.get("offset", 0)
+        file_size = pending_file.stat().st_size
+
+        return offset < file_size
+    except Exception:
+        return False
+
+
+def _spawn_worker(vault_dir):
+    """Spawn detached worker process that survives session exit.
+
+    Uses start_new_session=True for full detachment, stdout/stderr to DEVNULL.
+    Silently skips if engram is not on PATH.
+    """
+    try:
+        engram_path = shutil.which("engram")
+        if not engram_path:
+            return  # engram not on PATH, skip silently
+
+        # Spawn fully detached: new session, stdin/stdout/stderr to DEVNULL
+        subprocess.Popen(
+            [engram_path, "worker"],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except Exception:
+        # Fail silent on any error
+        pass
+
+
+def main():
+    try:
+        event_type = sys.argv[1] if len(sys.argv) > 1 else ""
+        event_type_lower = event_type.lower()
+
+        vault_dir = _get_vault()
+        enabled_flag = vault_dir / "_meta" / "hook-enabled"
+
+        # Check kill switch
+        if not enabled_flag.exists():
+            return
+
+        if event_type_lower == "stop":
+            # Read hook payload from stdin
+            try:
+                payload = json.load(sys.stdin)
+            except (json.JSONDecodeError, ValueError):
+                return
+
+            session_id = payload.get("session_id", "unknown")
+
+            # Derive the turn from the transcript first: real Stop payloads
+            # carry transcript_path but generally NO last_assistant_message.
+            turn_text = _extract_full_turn(payload.get("transcript_path"))
+            if turn_text is not None:
+                # Substantiveness gate on the transcript-derived turn
+                if len(turn_text) < 50:
+                    return
+            else:
+                # Transcript missing/unreadable → fall back to
+                # last_assistant_message (if the payload happens to carry it)
+                last_message = payload.get("last_assistant_message", "")
+                if not isinstance(last_message, str) or len(last_message) < 50:
+                    return
+                turn_text = _cap_turn_text(last_message)
+
+            # Build record for pending.jsonl
+            record = {
+                "session_id": session_id,
+                "timestamp": datetime.now().isoformat(),
+                "turn_text": turn_text,
+            }
+
+            # Append to pending.jsonl
+            pending_file = vault_dir / "_meta" / "pending.jsonl"
+            pending_file.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(pending_file, "a") as f:
+                f.write(json.dumps(record) + "\n")
+
+            # Spawn worker after successful append
+            _spawn_worker(vault_dir)
+
+        elif event_type_lower == "sessionend":
+            # Consume the hook payload so the writer never blocks on a full
+            # pipe; the payload itself is not needed on this path.
+            try:
+                sys.stdin.read()
+            except Exception:
+                pass
+
+            # SessionEnd: spawn worker if there's unprocessed content
+            if _has_unprocessed_content(vault_dir):
+                _spawn_worker(vault_dir)
+
+    except Exception:
+        # Fail silent on any error — never raise, never print
+        pass
 
 
 if __name__ == "__main__":

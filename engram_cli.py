@@ -19,7 +19,10 @@ Usage:
 """
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
+import io
 import json
 import os
 import re
@@ -254,14 +257,26 @@ def cmd_auto(args):
     if args.auto_action == "on":
         os.makedirs(os.path.dirname(hook_flag), exist_ok=True)
         open(hook_flag, "w").close()
-        print(json.dumps({"status": "ok", "auto_replay": "enabled"}))
+        print(json.dumps({
+            "status": "ok",
+            "auto_replay": "enabled",
+            "note": "Automatic background extraction enabled (turns captured and processed in background)"
+        }))
     elif args.auto_action == "off":
         if os.path.exists(hook_flag):
             os.remove(hook_flag)
-        print(json.dumps({"status": "ok", "auto_replay": "disabled"}))
+        print(json.dumps({
+            "status": "ok",
+            "auto_replay": "disabled",
+            "note": "Automatic background extraction disabled"
+        }))
     else:
         enabled = os.path.exists(hook_flag)
-        print(json.dumps({"status": "ok", "auto_replay": "enabled" if enabled else "disabled"}))
+        print(json.dumps({
+            "status": "ok",
+            "auto_replay": "enabled" if enabled else "disabled",
+            "note": "Background extraction " + ("active" if enabled else "inactive")
+        }))
 
 
 # ── replay ──────────────────────────────────────────────
@@ -355,22 +370,28 @@ def _build_evidence_maps(evidence_items, date):
 def cmd_replay(args):
     """Process CC-extracted entities/relations JSON from stdin."""
     data = json.load(sys.stdin, strict=False)
-    vault = args.vault
+    print(json.dumps(_replay_data(args.vault, data)))
 
+
+def _replay_data(vault, data):
+    """Land extracted entities/relations JSON into the graph + vault.
+
+    Shared by `engram replay` (stdin) and `engram worker` (in-process).
+    Returns the result dict (status "skipped" on dedup hit, else "ok").
+    """
     # Dedup check: skip if same content was saved within 15 minutes
     if _check_dedup(vault, data):
-        print(json.dumps({
+        return {
             "status": "skipped",
             "reason": "duplicate replay detected within 15-minute window",
-        }))
-        return
+        }
 
     graph = MemoryGraph(vault)
 
     entities = data.get("entities", [])
     relations = data.get("relations", [])
     evidence_items = data.get("evidence", [])
-    date = data.get("date", datetime.now().strftime("%Y-%m-%d"))
+    date = _sanitize_extraction_date(data.get("date"))
     summary = data.get("daily_summary", "")
 
     # Build evidence maps: entity/relation → wikilink refs
@@ -563,7 +584,7 @@ def cmd_replay(args):
     # Track consolidation state
     tier, consolidation_details = _increment_replay_and_check(vault)
 
-    result = {
+    return {
         "status": "ok",
         "entities_added": len(entities),
         "relations_added": len(relations),
@@ -577,7 +598,6 @@ def cmd_replay(args):
             **consolidation_details,
         },
     }
-    print(json.dumps(result))
 
 
 def _clear_queue(vault):
@@ -1011,14 +1031,12 @@ def cmd_save_pattern(args):
 
 # ── context ────────────────────────────────────────────
 
-def cmd_context(args):
-    """Output compact summary for injecting into agent system prompt.
+def _build_context_text(vault):
+    """Build context markdown text and metadata.
 
-    Inspired by community/engram's mem_context — returns recent activity
-    and top entities in a token-efficient format.
+    Returns: (context_text: str, metadata: dict)
     """
-    graph = MemoryGraph(args.vault)
-    vault = args.vault
+    graph = MemoryGraph(vault)
 
     # Top entities by degree (hub nodes)
     G = graph._graph
@@ -1110,12 +1128,43 @@ def cmd_context(args):
 
     context_text = "\n\n".join(parts)
 
-    print(json.dumps({
-        "context": context_text,
+    metadata = {
         "entity_count": graph.node_count,
         "edge_count": graph.edge_count,
         "suggested_questions": suggested,
-    }, indent=2))
+    }
+
+    return context_text, metadata
+
+
+def cmd_context(args):
+    """Output compact summary for injecting into agent system prompt.
+
+    Inspired by community/engram's mem_context — returns recent activity
+    and top entities in a token-efficient format.
+    """
+    vault = args.vault
+    context_text, metadata = _build_context_text(vault)
+
+    if args.write_cache:
+        # Write cache mode: save markdown to _meta/context-cache.md
+        # (atomic tmp + rename so a concurrent prompt hook never reads a
+        # half-written digest)
+        cache_path = _write_context_cache(vault, context_text)
+
+        file_size = len(context_text.encode("utf-8"))
+        print(json.dumps({
+            "written": cache_path,
+            "bytes": file_size,
+        }))
+    else:
+        # Default mode: print JSON
+        print(json.dumps({
+            "context": context_text,
+            "entity_count": metadata["entity_count"],
+            "edge_count": metadata["edge_count"],
+            "suggested_questions": metadata["suggested_questions"],
+        }, indent=2))
 
 
 # ── feedback ───────────────────────────────────────────
@@ -1352,6 +1401,376 @@ def cmd_lint(args):
     }, indent=2))
 
 
+# ── worker ─────────────────────────────────────────────
+
+WORKER_DEFAULTS = {
+    "worker_claude_bin": "claude",
+    "worker_model": None,
+    "worker_consolidation_every": 10,
+    # Max pending turns drained per worker run. Bounds the extraction prompt
+    # (~20KB/turn cap → ≤~400KB) and keeps a huge backlog from producing one
+    # unmanageable batch; leftover lines are picked up by the next run.
+    "worker_max_turns_per_run": 20,
+}
+
+# Fallback extraction rules, used only if plugin/commands/engram.md cannot be
+# loaded at runtime (e.g. unusual install layout). The .md file is the source
+# of truth; keep this constant a faithful summary of its rules + schema.
+FALLBACK_EXTRACTION_RULES = """\
+### Extraction criteria
+Extract projects, tools, and concepts worked on, debugged, designed, or decided
+about — only if at least one applies: design decision (chose/rejected/compared),
+bug/fix, built/modified code, or core architecture. Do NOT extract transient
+actions or the user themselves.
+
+### Naming
+UPPERCASE with underscores (e.g. CLAUDE_SLACK_BRIDGE). Match existing entity
+names when referring to the same thing.
+
+### Confidence tagging
+Every entity and relation MUST include "confidence":
+EXTRACTED (explicitly discussed) | INFERRED (mentioned in passing) |
+AMBIGUOUS (unclear relevance).
+
+### Weight scale (relations)
+0.1-0.3 weak mention | 0.4-0.6 moderate | 0.7-0.9 core dependency | 1.0 identity
+
+### JSON schema
+{
+  "date": "YYYY-MM-DD",
+  "entities": [{"name": "NAME", "entity_type": "PROJECT|TOOL|CONCEPT|PERSON|ORGANIZATION",
+                "description": "Markdown description", "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"}],
+  "relations": [{"source": "A", "target": "B", "description": "...", "weight": 0.8,
+                 "confidence": "EXTRACTED|INFERRED|AMBIGUOUS"}],
+  "evidence": [{"content": "Specific factual claim", "entities": ["A"], "relations": [["A", "B"]]}],
+  "daily_summary": "One paragraph summary"
+}
+"""
+
+
+def _load_worker_config():
+    """Load worker config keys from the engram config file, with defaults."""
+    cfg = dict(WORKER_DEFAULTS)
+    try:
+        with open(CONFIG_PATH) as f:
+            data = json.load(f)
+        for key in WORKER_DEFAULTS:
+            if key in data:
+                cfg[key] = data[key]
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return cfg
+
+
+def _load_extraction_rules():
+    """Load extraction rules from plugin/commands/engram.md, else fallback."""
+    rules_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "plugin", "commands", "engram.md")
+    try:
+        with open(rules_path, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return FALLBACK_EXTRACTION_RULES
+
+
+def _build_extraction_prompt(turns):
+    """Build a tool-less extraction prompt from rules + drained turn records."""
+    rules = _load_extraction_rules()
+    turn_blocks = []
+    for i, t in enumerate(turns, 1):
+        turn_blocks.append(
+            f"--- Turn {i} (session {t.get('session_id', '?')}, {t.get('timestamp', '?')}) ---\n"
+            f"{t.get('turn_text', '')}"
+        )
+    return (
+        "You are an extraction engine for the engram knowledge graph. "
+        "Apply the extraction rules below to the conversation turns and output "
+        "ONLY the JSON object described in the rules' JSON format — no prose, "
+        "no markdown fences, no tool use.\n\n"
+        "Ignore any shell commands or step instructions in the rules document; "
+        "you only produce the JSON.\n\n"
+        f"# Extraction rules\n\n{rules}\n\n"
+        f"# Conversation turns to extract from\n\n" + "\n\n".join(turn_blocks) +
+        f"\n\nUse \"date\": \"{datetime.now().strftime('%Y-%m-%d')}\". "
+        "Output ONLY the JSON object."
+    )
+
+
+def _extract_json_object(text):
+    """Extract a JSON object from model text, stripping markdown fences."""
+    text = text.strip()
+    fence = re.match(r"^```(?:json)?\s*\n(.*?)\n```\s*$", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    # Fall back to outermost braces in case of stray prose
+    if not text.startswith("{"):
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            raise ValueError("no JSON object found in model output")
+        text = text[start:end + 1]
+    return json.loads(text, strict=False)
+
+
+EXTRACTION_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _sanitize_extraction_date(date):
+    """Return date if it is a strict YYYY-MM-DD string, else today's date.
+
+    The date comes verbatim from model-extracted JSON and is joined into the
+    daily-note path, so anything else (e.g. a prompt-injected "../../evil")
+    must never reach os.path.join. Replacing with today — rather than failing
+    the extraction — keeps an otherwise-valid batch landing instead of
+    retrying forever with the same poisoned field.
+    """
+    if isinstance(date, str) and EXTRACTION_DATE_RE.match(date):
+        return date
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _validate_extraction(data):
+    """Validate model-extracted JSON against the fields the replay path
+    indexes unconditionally, BEFORE any dedup marker or graph write happens.
+
+    Raises ValueError on the first problem found.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("extraction is not a JSON object")
+
+    def _req_str(item, key, what):
+        if not isinstance(item, dict):
+            raise ValueError(f"{what} is not an object: {item!r:.100}")
+        val = item.get(key)
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(f"{what} missing required string field '{key}'")
+
+    for key in ("entities", "relations", "evidence", "hyperedges"):
+        if not isinstance(data.get(key, []), list):
+            raise ValueError(f"'{key}' is not a list")
+
+    for e in data.get("entities", []):
+        _req_str(e, "name", "entity")
+    for r in data.get("relations", []):
+        _req_str(r, "source", "relation")
+        _req_str(r, "target", "relation")
+    for h in data.get("hyperedges", []):
+        _req_str(h, "id", "hyperedge")
+        _req_str(h, "label", "hyperedge")
+    for ev in data.get("evidence", []):
+        if not isinstance(ev, dict):
+            raise ValueError(f"evidence item is not an object: {ev!r:.100}")
+        if not isinstance(ev.get("entities", []), list) or not all(
+                isinstance(x, str) for x in ev.get("entities", [])):
+            raise ValueError("evidence 'entities' must be a list of strings")
+        for rel in ev.get("relations", []):
+            if not isinstance(rel, (list, tuple)) or not all(
+                    isinstance(x, str) for x in rel):
+                raise ValueError("evidence 'relations' items must be pairs of strings")
+
+
+def _worker_log(vault, message):
+    """Append one timestamped line to _meta/worker.log."""
+    log_path = os.path.join(vault, "_meta", "worker.log")
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(f"{datetime.now().isoformat()} {message}\n")
+
+
+def _read_worker_state(vault):
+    try:
+        with open(os.path.join(vault, "_meta", "worker-state.json")) as f:
+            state = json.load(f)
+        if not isinstance(state, dict):
+            raise ValueError
+        return state
+    except (OSError, ValueError):
+        return {"offset": 0, "replays_since_consolidation": 0}
+
+
+def _write_worker_state(vault, state):
+    path = os.path.join(vault, "_meta", "worker-state.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(state, f, indent=2)
+    os.rename(tmp_path, path)  # atomic: never leaves a torn state file
+
+
+def _drain_pending(vault, offset, max_turns=None):
+    """Read complete JSON lines from pending.jsonl past offset.
+
+    Returns (turns, new_offset). Malformed lines are skipped but still
+    advance the offset. A truncated/rotated file (offset > size) resets to 0.
+    With max_turns set, at most that many turn records are consumed and
+    new_offset only advances past the lines actually consumed — leftover
+    backlog is picked up by the next run.
+    """
+    pending_path = os.path.join(vault, "_meta", "pending.jsonl")
+    if not os.path.exists(pending_path):
+        return [], offset if offset == 0 else 0
+    size = os.path.getsize(pending_path)
+    if offset > size:
+        offset = 0  # file was truncated/rotated
+    with open(pending_path, "rb") as f:
+        f.seek(offset)
+        data = f.read()
+    last_nl = data.rfind(b"\n")
+    if last_nl == -1:
+        return [], offset  # no complete new line
+    complete = data[:last_nl + 1]
+    turns = []
+    new_offset = offset
+    pos = 0
+    while pos < len(complete):
+        nl = complete.index(b"\n", pos)
+        raw_line = complete[pos:nl + 1]
+        pos = nl + 1
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if line:
+            try:
+                record = json.loads(line)
+                if isinstance(record, dict) and record.get("turn_text"):
+                    turns.append(record)
+            except json.JSONDecodeError:
+                pass  # skip malformed line, offset still advances
+        new_offset += len(raw_line)
+        if max_turns is not None and len(turns) >= max_turns:
+            break
+    return turns, new_offset
+
+
+def _write_context_cache(vault, context_text):
+    """Atomically write _meta/context-cache.md (tmp + rename).
+
+    A concurrent UserPromptSubmit hook reads this file; a plain open("w")
+    could expose a half-written digest mid-injection.
+    """
+    meta_dir = os.path.join(vault, "_meta")
+    os.makedirs(meta_dir, exist_ok=True)
+    cache_path = os.path.join(meta_dir, "context-cache.md")
+    tmp_path = cache_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(context_text)
+    os.rename(tmp_path, cache_path)  # atomic: readers never see a torn cache
+    return cache_path
+
+
+def _refresh_context_cache(vault):
+    """Rebuild _meta/context-cache.md in-process (Task 2 helper)."""
+    context_text, _ = _build_context_text(vault)
+    _write_context_cache(vault, context_text)
+
+
+def _maybe_consolidate(vault, state, threshold):
+    """Slow-cadence maintenance: run non-LLM lint, mark consolidation due."""
+    if state.get("replays_since_consolidation", 0) < threshold:
+        return
+    # Run the non-LLM lint in-process, suppressing its stdout report
+    try:
+        lint_args = argparse.Namespace(vault=vault)
+        with contextlib.redirect_stdout(io.StringIO()):
+            cmd_lint(lint_args)
+    except Exception:
+        pass  # maintenance is best-effort; never fail the worker for it
+    marker = os.path.join(vault, "_meta", "consolidation-due")
+    with open(marker, "w") as f:
+        f.write(datetime.now().isoformat() + "\n")
+    state["replays_since_consolidation"] = 0
+
+
+def cmd_worker(args):
+    """Drain pending.jsonl, extract via headless claude, land via replay."""
+    vault = args.vault
+    meta_dir = os.path.join(vault, "_meta")
+    os.makedirs(meta_dir, exist_ok=True)
+
+    # 1. Single-flight lock: another worker running → exit 0 immediately
+    lock_file = open(os.path.join(meta_dir, "worker.lock"), "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        # Another worker holds the lock — not an error
+        lock_file.close()
+        print(json.dumps({"processed": 0, "entities": 0, "relations": 0}))
+        return
+
+    try:
+        cfg = _load_worker_config()
+        state = _read_worker_state(vault)
+        max_turns = cfg["worker_max_turns_per_run"]
+        if not isinstance(max_turns, int) or max_turns < 1:
+            max_turns = WORKER_DEFAULTS["worker_max_turns_per_run"]
+        turns, new_offset = _drain_pending(vault, state.get("offset", 0),
+                                           max_turns=max_turns)
+
+        # 2. Nothing new → cheap idempotent no-op
+        if not turns:
+            if new_offset != state.get("offset", 0):
+                state["offset"] = new_offset
+                _write_worker_state(vault, state)
+            print(json.dumps({"processed": 0, "entities": 0, "relations": 0}))
+            return
+
+        # 3. Headless tool-less extraction (model returns JSON text only).
+        # The prompt goes via STDIN (`claude -p` reads it there when no
+        # positional prompt is given): argv would hit Linux MAX_ARG_STRLEN
+        # (~128KB) on a large backlog and leak conversation text into `ps`.
+        prompt = _build_extraction_prompt(turns)
+        cmd = [cfg["worker_claude_bin"], "-p", "--output-format", "json"]
+        if cfg["worker_model"]:
+            cmd += ["--model", cfg["worker_model"]]
+        if args.verbose:
+            print(f"worker: invoking {cfg['worker_claude_bin']} for {len(turns)} turn(s)",
+                  file=sys.stderr)
+        try:
+            proc = subprocess.run(cmd, input=prompt, capture_output=True,
+                                  text=True, timeout=args.timeout)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"claude exited {proc.returncode}: {proc.stderr.strip()[:500]}")
+            envelope = json.loads(proc.stdout, strict=False)
+            if not isinstance(envelope, dict) or "result" not in envelope:
+                raise ValueError("claude output missing 'result' envelope field")
+            if envelope.get("is_error"):
+                raise RuntimeError(
+                    f"claude reported an error: {str(envelope['result'])[:500]}")
+            data = _extract_json_object(envelope["result"])
+
+            # Validate BEFORE _replay_data so a batch that would crash
+            # mid-landing never writes a dedup marker (which would make the
+            # retry get "skipped" and permanently drop the batch)
+            _validate_extraction(data)
+
+            # 4. Land via the shared replay path (dedup applies unchanged)
+            result = _replay_data(vault, data)
+            entities = result.get("entities_added", 0)
+            relations = result.get("relations_added", 0)
+
+            # 5+6. Refresh cache + slow-cadence consolidation on real landings
+            if result.get("status") == "ok":
+                _refresh_context_cache(vault)
+                state["replays_since_consolidation"] = \
+                    state.get("replays_since_consolidation", 0) + 1
+                _maybe_consolidate(vault, state, cfg["worker_consolidation_every"])
+
+            # 7. Persist the watermark only after a fully successful run
+            state["offset"] = new_offset
+            _write_worker_state(vault, state)
+        except Exception as e:
+            # Leave the watermark unchanged so a later run retries these turns
+            _worker_log(vault, f"ERROR turns={len(turns)} {type(e).__name__}: {e}")
+            print(json.dumps({"error": str(e), "processed": 0,
+                              "entities": 0, "relations": 0}))
+            sys.exit(1)
+
+        _worker_log(vault, f"OK turns={len(turns)} entities={entities} "
+                           f"relations={relations} status={result.get('status')}")
+        print(json.dumps({"processed": len(turns), "entities": entities,
+                          "relations": relations}))
+    finally:
+        lock_file.close()
+
+
 # ── status ──────────────────────────────────────────────
 
 def cmd_status(args):
@@ -1415,6 +1834,8 @@ def cmd_status(args):
     print(json.dumps({
         "nodes": graph.node_count,
         "edges": graph.edge_count,
+        "consolidation_recommended": os.path.exists(
+            os.path.join(vault, "_meta", "consolidation-due")),
         "density": round(density, 4),
         "type_distribution": dict(type_dist),
         "confidence_distribution": dict(conf_dist),
@@ -1443,6 +1864,12 @@ def cmd_consolidation(args):
             "replay_count": 0,
         }
         _write_consolidation_state(vault, state)
+        # Clear the due marker written by _maybe_consolidate, so
+        # `engram status` stops recommending consolidation after a reset
+        try:
+            os.remove(os.path.join(vault, "_meta", "consolidation-due"))
+        except FileNotFoundError:
+            pass
         print(json.dumps({"status": "ok", "action": "reset", "state": state}))
     else:
         state = _read_consolidation_state(vault)
@@ -1506,11 +1933,16 @@ def main():
     p.add_argument("--stdin", action="store_true", help="Read correction instructions JSON from stdin")
 
     p = sub.add_parser("context", help="Compact summary for system prompt injection")
+    p.add_argument("--write-cache", action="store_true", help="Write markdown context to _meta/context-cache.md")
 
     p = sub.add_parser("lint", help="Validate vault consistency (GraphML vs markdown, dead links, orphans)")
 
     p = sub.add_parser("consolidation", help="Show or reset consolidation tracking state")
     p.add_argument("--reset", action="store_true", help="Reset counter (run after full consolidation)")
+
+    p = sub.add_parser("worker", help="Drain pending turns, extract via headless claude, land in graph")
+    p.add_argument("--timeout", type=int, default=300, help="Timeout in seconds for the claude call (default: 300)")
+    p.add_argument("--verbose", action="store_true", help="Log progress to stderr")
 
     # Global option: all subparsers get --vault
     for name, sp in sub.choices.items():
@@ -1532,7 +1964,7 @@ def main():
      "save-pattern": cmd_save_pattern, "feedback": cmd_feedback,
      "status": cmd_status, "query": cmd_query,
      "context": cmd_context, "lint": cmd_lint,
-     "consolidation": cmd_consolidation}[args.command](args)
+     "consolidation": cmd_consolidation, "worker": cmd_worker}[args.command](args)
 
 
 if __name__ == "__main__":

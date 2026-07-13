@@ -24,6 +24,30 @@
                     }
                 ]
             }
+        ],
+        "SessionEnd": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-hook SessionEnd",
+                        "timeout": 5000
+                    }
+                ]
+            }
+        ],
+        "UserPromptSubmit": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-context",
+                        "timeout": 3000
+                    }
+                ]
+            }
         ]
     }
 }

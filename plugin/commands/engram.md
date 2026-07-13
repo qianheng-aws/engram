@@ -1,5 +1,7 @@
 # Engram — Extract memories from current session
 
+> **Note:** The background worker (`engram worker`) handles routine capture automatically. Use this command for **deep extraction** with the full interactive model, or when you want to override the automatic flow.
+
 Extract entities and relations from the current session conversation and persist to the Obsidian vault knowledge graph.
 
 ## Steps

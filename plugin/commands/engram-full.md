@@ -1,5 +1,7 @@
 # Engram Full — Complete memory consolidation
 
+> **Note:** The background worker handles routine replay automatically. Use this command for **full 6-stage consolidation** (feedback, integrate, prune, community, abstract, lint) — typically run when `_meta/consolidation-due` marker exists.
+
 Run all six engram stages: replay, feedback, integrate, prune, community, abstract.
 
 ## Steps
