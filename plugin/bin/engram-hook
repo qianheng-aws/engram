@@ -184,16 +184,20 @@ def main():
                 return
 
             session_id = payload.get("session_id", "unknown")
-            last_message = payload.get("last_assistant_message", "")
 
-            # Skip trivial sessions
-            if not last_message or len(last_message) < 50:
-                return
-
-            # Try to extract full turn from transcript, fall back to last_message
-            transcript_path = payload.get("transcript_path")
-            turn_text = _extract_full_turn(transcript_path)
-            if turn_text is None:
+            # Derive the turn from the transcript first: real Stop payloads
+            # carry transcript_path but generally NO last_assistant_message.
+            turn_text = _extract_full_turn(payload.get("transcript_path"))
+            if turn_text is not None:
+                # Substantiveness gate on the transcript-derived turn
+                if len(turn_text) < 50:
+                    return
+            else:
+                # Transcript missing/unreadable → fall back to
+                # last_assistant_message (if the payload happens to carry it)
+                last_message = payload.get("last_assistant_message", "")
+                if not isinstance(last_message, str) or len(last_message) < 50:
+                    return
                 turn_text = _cap_turn_text(last_message)
 
             # Build record for pending.jsonl
