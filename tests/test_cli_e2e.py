@@ -494,6 +494,77 @@ def test_context_write_cache_empty_vault():
         print("  ✅ context --write-cache: empty vault creates file without crash")
 
 
+def test_entity_index_seeded():
+    """context --write-cache creates entity-index.json with keywords and snippets."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)
+
+        # Run with --write-cache (should create both cache and index)
+        result = subprocess.run(
+            CLI + ["context", "--write-cache", "--vault", vault],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        # Verify entity-index.json exists
+        index_path = os.path.join(vault, "_meta", "entity-index.json")
+        assert os.path.exists(index_path), "entity-index.json should be created"
+
+        with open(index_path) as f:
+            index_data = json.load(f)
+
+        # Check schema
+        assert index_data.get("version") == 1
+        assert "entities" in index_data
+        entities = index_data["entities"]
+
+        # Should have at least one entity from seed data
+        assert len(entities) > 0, "Should have entities from seed"
+
+        # Check structure of first entity
+        entity_name = next(iter(entities))
+        entity = entities[entity_name]
+        assert "keywords" in entity
+        assert "snippet" in entity
+        assert isinstance(entity["keywords"], list)
+        assert isinstance(entity["snippet"], str)
+
+        # Keywords should be lowercase, ≥ 3 chars
+        for kw in entity["keywords"]:
+            assert kw.islower(), f"Keyword {kw} should be lowercase"
+            assert len(kw) >= 3, f"Keyword {kw} should be ≥ 3 chars"
+
+        # Snippet should be compact (≤ 300 chars)
+        assert len(entity["snippet"]) <= 300, f"Snippet too long: {len(entity['snippet'])} chars"
+
+        # Snippet should start with entity name
+        assert entity_name in entity["snippet"], f"Snippet should contain {entity_name}"
+
+        print("  ✅ entity-index.json: created with keywords and snippets")
+
+
+def test_entity_index_empty_vault():
+    """Empty vault creates valid empty entity-index.json."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+
+        result = subprocess.run(
+            CLI + ["context", "--write-cache", "--vault", vault],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        index_path = os.path.join(vault, "_meta", "entity-index.json")
+        assert os.path.exists(index_path)
+
+        with open(index_path) as f:
+            index_data = json.load(f)
+
+        assert index_data == {"version": 1, "entities": {}}
+        print("  ✅ entity-index.json: empty vault creates valid empty index")
+
+
 if __name__ == "__main__":
     print("Testing replay...")
     test_replay_basic()
@@ -538,5 +609,9 @@ if __name__ == "__main__":
     test_context_json_output()
     test_context_write_cache_seeded()
     test_context_write_cache_empty_vault()
+
+    print("\nTesting entity-index...")
+    test_entity_index_seeded()
+    test_entity_index_empty_vault()
 
     print("\n🎉 All CLI e2e tests passed!")

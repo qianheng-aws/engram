@@ -1151,6 +1151,7 @@ def cmd_context(args):
         # (atomic tmp + rename so a concurrent prompt hook never reads a
         # half-written digest)
         cache_path = _write_context_cache(vault, context_text)
+        _write_entity_index(vault)  # Also write entity-index.json
 
         file_size = len(context_text.encode("utf-8"))
         print(json.dumps({
@@ -1661,6 +1662,98 @@ def _refresh_context_cache(vault):
     _write_context_cache(vault, context_text)
 
 
+# Stop words for entity index keyword extraction (shared with hook)
+INDEX_STOP_WORDS = {
+    "THE", "AND", "FOR", "WITH", "FROM", "THAT", "THIS", "HAVE", "HAS",
+    "ARE", "WAS", "WERE", "BEEN", "WILL", "CAN", "COULD", "WOULD", "SHOULD",
+    "ABOUT", "INTO", "THROUGH", "DURING", "BEFORE", "AFTER", "ABOVE", "BELOW",
+    "BETWEEN", "UNDER", "AGAIN", "FURTHER", "THEN", "ONCE", "HERE", "THERE",
+    "WHEN", "WHERE", "WHY", "HOW", "ALL", "EACH", "OTHER", "SOME", "SUCH",
+    "ONLY", "OWN", "SAME", "THAN", "TOO", "VERY", "JUST", "BUT", "NOT",
+}
+
+
+def _build_entity_index(vault):
+    """Build entity index dict: {entity_name: {keywords: [...], snippet: "..."}}."""
+    graph = MemoryGraph(vault)
+    index = {}
+
+    for entity_name in graph.all_entity_names():
+        attrs = graph.get_entity(entity_name)
+        if not attrs:
+            continue
+
+        # Extract keywords from entity name
+        name_tokens = re.split(r'[_\-\s]+', entity_name)
+        keywords = []
+        for token in name_tokens:
+            token_upper = token.upper()
+            token_lower = token.lower()
+            if len(token_lower) >= 3 and token_upper not in INDEX_STOP_WORDS:
+                keywords.append(token_lower)
+
+        # Add alias keywords if present
+        alias = attrs.get("alias", "")
+        if alias:
+            alias_tokens = re.split(r'[_\-\s]+', alias)
+            for token in alias_tokens:
+                token_upper = token.upper()
+                token_lower = token.lower()
+                if len(token_lower) >= 3 and token_upper not in INDEX_STOP_WORDS:
+                    if token_lower not in keywords:
+                        keywords.append(token_lower)
+
+        # Build snippet: "- NAME (TYPE): description... | related: neighbor1, neighbor2"
+        entity_type = attrs.get("entity_type", "?")
+        desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
+        # Trim description to ~120 chars
+        if len(desc) > 120:
+            desc = desc[:120].rsplit(" ", 1)[0] + "..."
+
+        neighbors = graph.get_neighbors(entity_name)
+        neighbor_names = [n for n, _ in neighbors[:5]]
+
+        snippet = f"- {entity_name} ({entity_type}): {desc}"
+        if neighbor_names:
+            snippet += f" | related: {', '.join(neighbor_names)}"
+
+        # Cap snippet at 300 chars
+        if len(snippet) > 300:
+            snippet = snippet[:297] + "..."
+
+        index[entity_name] = {
+            "keywords": keywords,
+            "snippet": snippet,
+        }
+
+    return index
+
+
+def _write_entity_index(vault):
+    """Atomically write _meta/entity-index.json (tmp + rename)."""
+    index = _build_entity_index(vault)
+    index_data = {
+        "version": 1,
+        "entities": index,
+    }
+
+    meta_dir = os.path.join(vault, "_meta")
+    os.makedirs(meta_dir, exist_ok=True)
+    index_path = os.path.join(meta_dir, "entity-index.json")
+    tmp_path = index_path + ".tmp"
+
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(index_data, f, indent=2, ensure_ascii=False)
+
+    os.rename(tmp_path, index_path)  # atomic
+    return index_path
+
+
+def _refresh_entity_index(vault):
+    """Rebuild _meta/entity-index.json in-process."""
+    _write_entity_index(vault)
+
+
 def _maybe_consolidate(vault, state, threshold):
     """Slow-cadence maintenance: run non-LLM lint, mark consolidation due."""
     if state.get("replays_since_consolidation", 0) < threshold:
@@ -1746,9 +1839,10 @@ def cmd_worker(args):
             entities = result.get("entities_added", 0)
             relations = result.get("relations_added", 0)
 
-            # 5+6. Refresh cache + slow-cadence consolidation on real landings
+            # 5+6. Refresh cache + index + slow-cadence consolidation on real landings
             if result.get("status") == "ok":
                 _refresh_context_cache(vault)
+                _refresh_entity_index(vault)
                 state["replays_since_consolidation"] = \
                     state.get("replays_since_consolidation", 0) + 1
                 _maybe_consolidate(vault, state, cfg["worker_consolidation_every"])

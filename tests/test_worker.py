@@ -376,6 +376,35 @@ def test_worker_refreshes_context_cache():
         print("  ✅ worker: refreshes _meta/context-cache.md after landing")
 
 
+def test_worker_refreshes_entity_index():
+    """Worker refreshes entity-index.json alongside context-cache.md after landing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake = _write_fake_claude(tmpdir)
+        config = _write_config(tmpdir, vault, fake)
+        _seed_pending(vault, n=1)
+
+        _run_worker(vault, config, check=True)
+
+        # Both files should exist
+        cache_path = os.path.join(vault, "_meta", "context-cache.md")
+        index_path = os.path.join(vault, "_meta", "entity-index.json")
+        assert os.path.exists(cache_path)
+        assert os.path.exists(index_path)
+
+        # Index should contain the worker entity
+        with open(index_path) as f:
+            index_data = json.load(f)
+        assert index_data["version"] == 1
+        assert "WORKER_ENTITY_A" in index_data["entities"]
+
+        entity = index_data["entities"]["WORKER_ENTITY_A"]
+        assert "keywords" in entity
+        assert "snippet" in entity
+        assert len(entity["snippet"]) <= 300
+        print("  ✅ worker: refreshes _meta/entity-index.json after landing")
+
+
 # ── malformed pending lines ───────────────────────────────
 
 def test_worker_skips_malformed_pending_lines():
@@ -599,6 +628,7 @@ if __name__ == "__main__":
     test_worker_envelope_is_error()
     test_worker_dedup_prevents_double_landing()
     test_worker_refreshes_context_cache()
+    test_worker_refreshes_entity_index()
     test_worker_skips_malformed_pending_lines()
     test_worker_passes_prompt_via_stdin_not_argv()
     test_worker_giant_backlog_does_not_hit_argv_limit()

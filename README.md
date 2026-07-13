@@ -226,6 +226,7 @@ Open the vault in [Obsidian](https://obsidian.md) to get an interactive knowledg
     ├── pending.jsonl         #   Queue of captured turns (watermark-based)
     ├── worker-state.json     #   Worker offset + consolidation counter
     ├── context-cache.md      #   Stable digest for UserPromptSubmit injection
+    ├── entity-index.json     #   Precomputed entity keywords + snippets for fast prompt matching
     ├── worker.log            #   Worker run log (timestamped entries)
     ├── worker.lock           #   Single-flight lock (fcntl.LOCK_EX)
     ├── consolidation-due     #   Marker file when consolidation threshold reached
@@ -268,7 +269,7 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 | Decision | Why |
 |:---------|:----|
 | **CC as LLM** | No API keys needed. CC extracts entities directly. |
-| **Graph-only retrieval** | No embeddings. CC picks relevant entities from the full list. Scales to ~2000 entities. |
+| **Graph-only retrieval** | No embeddings. Hook reads precomputed entity index for prompt matching; falls back to live query when index absent. Scales to ~2000 entities. |
 | **nano-graphrag reference** | Reused prompt templates and storage format, not runtime. |
 | **Obsidian-native** | All output is valid Obsidian markdown. Open vault → instant graph view. |
 | **Description cap** | Keep first + latest description only. Prevents infinite growth. |
