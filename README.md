@@ -85,11 +85,15 @@ claude plugin marketplace add ./
 claude plugin install engram@engram-echo
 ```
 
-Vault, config, and CLAUDE.md prompt all auto-initialize on first use. Auto-capture is **enabled by default**.
+Vault, config, and CLAUDE.md prompt all auto-initialize on first use. Then enable the automatic flow (one-time):
+
+```bash
+engram auto on    # enable auto-capture — the hooks stay inactive until this runs
+```
 
 Optional:
 - `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
-- `engram auto off` — disable auto-capture (turn it back on with `engram auto on`)
+- `engram auto off` — disable auto-capture again at any time
 
 ## 🔄 Updating
 
@@ -120,7 +124,7 @@ claude plugin update engram@engram-echo
 
 ## 🎮 Commands
 
-Engram works automatically — no manual commands needed for routine sessions.
+Once auto-capture is enabled (`engram auto on`), Engram works automatically — no manual commands needed for routine sessions.
 
 **Optional power-user commands:**
 
@@ -132,7 +136,7 @@ Engram works automatically — no manual commands needed for routine sessions.
 | `/engram-community` | Detect and summarize knowledge clusters (Louvain) |
 | `/engram-status` | Show vault statistics, graph analysis |
 | `/engram-query <question>` | Search knowledge graph (keyword + graph traversal) |
-| `/engram-on` | Enable auto-capture (default: on) |
+| `/engram-on` | Enable auto-capture (required once — hooks are inactive until enabled) |
 | `/engram-off` | Disable auto-capture |
 
 ### Automatic flow vs manual commands
@@ -275,7 +279,7 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ```bash
 # Setup
 engram init [PATH]                              # Initialize vault + register in ~/.claude/CLAUDE.md
-engram auto [on|off|status]                     # Toggle auto-capture (default: on)
+engram auto [on|off|status]                     # Toggle auto-capture (run `on` once to enable hooks)
 engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
 engram uninstall                                # Remove from ~/.claude/CLAUDE.md
 
