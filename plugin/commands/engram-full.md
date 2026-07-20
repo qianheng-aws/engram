@@ -1,52 +1,30 @@
 # Engram Full — Complete memory consolidation
 
-> **Note:** The background worker handles routine replay automatically. Use this command for **full 6-stage consolidation** (feedback, integrate, prune, community, abstract, lint) — typically run when `_meta/consolidation-due` marker exists.
-
-Run all six engram stages: replay, feedback, integrate, prune, community, abstract.
+> **Note:** The background worker handles routine replay automatically. This command kicks off **full consolidation** (feedback, integrate, prune, community, abstract, lint) as a **background job** — typically run when the `_meta/consolidation-due` marker exists. It does not block the session.
 
 ## Steps
 
-**1. Replay** — Run `/engram` first (extract entities from current session).
+**1. Launch the background consolidation:**
 
-**2. Feedback** — Process human corrections:
 ```bash
-engram feedback```
-If callouts exist, review and apply fixes. See `/engram-feedback` for details.
-
-**3. Integrate** — Find duplicate entities:
-```bash
-engram integrate```
-Review candidates and merge if needed.
-
-**4. Prune** — Check for decaying entities:
-```bash
-engram prune```
-Review fading/archivable entities. Also check `knowledge_gaps` from status — isolated nodes (degree 0) are strong prune candidates.
-
-**5. Community** — Detect and summarize knowledge clusters:
-```bash
-engram community```
-For each community, generate a title and summary. If `surprising_connections` exist, also generate a cross-community comparison entry with a structured comparison (table or matrix) of the connected entities. Then save:
-```bash
-echo '<json>' | engram community --stdin
+engram consolidate --detach
 ```
-Community JSON: `{"communities": [{"id": 0, "title": "...", "summary": "...", "members": ["A", "B"]}]}`
 
-**6. Abstract** — Discover behavioral patterns:
-```bash
-engram abstract```
-Analyze the returned daily notes for recurring behaviors, decision preferences, and problem patterns. Also review `suggested_questions` from status — bridge nodes often reveal cross-domain patterns. Output JSON and save:
-```bash
-echo '<json>' | engram save-pattern --stdin
-```
-Pattern JSON: `{"new_patterns": [{"name": "...", "description": "...", "evidence": ["2026-04-06"], "confidence": 0.7}], "updated_patterns": []}`
+This returns immediately with `{"status": "started", "log": ...}`. A detached process runs all stages headlessly (each judgment stage — feedback, integrate, prune, community, abstract — calls `claude -p` itself), then lints and resets the consolidation counter.
 
-**7. Lint** — Validate vault consistency:
-```bash
-engram lint```
-Checks: GraphML ↔ markdown sync, dead wikilinks, orphan nodes (degree 0), frontmatter completeness. If issues > 0, review and fix before finishing.
+**2. Tell the user** consolidation is running in the background and where the log is (`_meta/consolidate.log` in the vault). Do NOT wait for it or poll the log.
 
-After all stages complete, reset the consolidation counter so the next reminder cycle starts fresh:
-```bash
-engram consolidation --reset
-```
+If the output is `{"status": "skipped", "reason": "another consolidate is running"}`, tell the user a run is already in progress.
+
+## Interactive fallback
+
+Only if the user explicitly asks to run consolidation **interactively** (e.g. to review merges/archives before they apply), run the stages in the session instead — each report command, review its output, then pipe the decision JSON back:
+
+1. **Replay** — run `/engram` first (extract entities from the current session).
+2. **Feedback** — `engram feedback`, review callouts, apply via `engram feedback --stdin` (`{"corrections": [...], "merges": [...], "deletes": [...]}`).
+3. **Integrate** — `engram integrate`, review duplicate candidates, merge via `engram integrate --stdin` (`{"merges": [{"canonical": "KEEP", "aliases": ["REMOVE"]}]}`).
+4. **Prune** — `engram prune`, review fading/archivable, archive via `engram prune --stdin` (`{"archive": ["ENTITY"]}`). Isolated nodes (degree 0) are strong candidates.
+5. **Community** — `engram community`, write a title + summary per cluster, save via `engram community --stdin` (`{"communities": [{"id": 0, "title": "...", "summary": "...", "members": [...]}]}`).
+6. **Abstract** — `engram abstract`, mine daily notes for recurring behaviors, save via `engram save-pattern --stdin` (`{"new_patterns": [{"name": "...", "description": "...", "evidence": ["YYYY-MM-DD"], "confidence": 0.7}], "updated_patterns": []}`).
+7. **Lint** — `engram lint`; fix any issues (dead wikilinks, orphans).
+8. **Reset** — `engram consolidation --reset`.

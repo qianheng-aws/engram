@@ -131,7 +131,7 @@ Once auto-capture is enabled (`engram auto on`), Engram works automatically — 
 | Command | Description |
 |:--------|:------------|
 | `/engram` | Deep extraction with full interactive model (instead of background worker) |
-| `/engram-full` | Full consolidation: replay → feedback → integrate → prune → community → abstract → lint |
+| `/engram-full` | Kick off full consolidation in the background (feedback → integrate → prune → community → abstract → lint) |
 | `/engram-feedback` | Process human corrections from Obsidian callouts |
 | `/engram-community` | Detect and summarize knowledge clusters (Louvain) |
 | `/engram-status` | Show vault statistics, graph analysis |
@@ -144,16 +144,19 @@ Once auto-capture is enabled (`engram auto on`), Engram works automatically — 
 | | Automatic (background worker) | Manual `/engram` | `/engram-full` |
 |:--|:------------------------------|:-----------------|:---------------|
 | Trigger | Every session (Stop/SessionEnd hook) | On-demand | On-demand |
-| Model | Headless tool-less CC (`claude -p`) | Full interactive model | Full interactive model |
+| Model | Headless tool-less CC (`claude -p`) | Full interactive model | Headless CC per stage (`claude -p`) |
 | Stages | Replay only | Replay only | All 6 stages + lint |
-| Speed | Fast, runs in background | Fast (one extraction) | Slower (multi-step) |
+| Speed | Fast, runs in background | Fast (one extraction) | Runs in background (`engram consolidate --detach`) |
 | When to use | Runs automatically | Deep extraction, or override auto | Consolidation maintenance |
 
-**Auto-consolidation:** The background worker tracks how many replays have occurred since the last full run. When thresholds are reached, a marker file `_meta/consolidation-due` is created to remind you to run `/engram-full`. Thresholds are configurable in `~/.engram/config.json`:
+**Headless consolidation:** `engram consolidate` runs every stage without an interactive session — each judgment stage (feedback, integrate, prune, community, abstract) makes its own `claude -p` call, then lint runs and the counter resets. `--detach` spawns it in the background and returns immediately; progress lands in `_meta/consolidate.log`, and a `consolidate.lock` single-flight lock prevents overlapping runs. `/engram-full` uses this by default. To review merges/archives interactively before they apply, ask for the interactive flow instead.
+
+**Auto-consolidation:** The background worker tracks how many replays have occurred since the last full run. When thresholds are reached, a marker file `_meta/consolidation-due` is created to remind you to run `/engram-full` — or, with `worker_auto_consolidate` enabled, the worker spawns a detached `engram consolidate` itself so no reminder is needed. Configurable in `~/.engram/config.json`:
 
 ```json
 {
-  "worker_consolidation_every": 10
+  "worker_consolidation_every": 10,
+  "worker_auto_consolidate": false
 }
 ```
 

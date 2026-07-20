@@ -15,6 +15,7 @@ Usage:
     engram status                               # vault statistics
     engram query --question "..."               # search graph
     engram consolidation [--reset]              # show/reset consolidation tracking
+    engram consolidate [--detach]               # headless full consolidation (claude -p per stage)
     All commands accept optional --vault PATH to override the saved default.
 """
 
@@ -26,6 +27,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections import defaultdict
@@ -1412,6 +1414,9 @@ WORKER_DEFAULTS = {
     # (~20KB/turn cap → ≤~400KB) and keeps a huge backlog from producing one
     # unmanageable batch; leftover lines are picked up by the next run.
     "worker_max_turns_per_run": 20,
+    # When true, the worker spawns a detached `engram consolidate` run
+    # instead of just writing the consolidation-due marker.
+    "worker_auto_consolidate": False,
 }
 
 # Fallback extraction rules, used only if plugin/commands/engram.md cannot be
@@ -1569,12 +1574,36 @@ def _validate_extraction(data):
                 raise ValueError("evidence 'relations' items must be pairs of strings")
 
 
-def _worker_log(vault, message):
-    """Append one timestamped line to _meta/worker.log."""
-    log_path = os.path.join(vault, "_meta", "worker.log")
+def _worker_log(vault, message, logfile="worker.log"):
+    """Append one timestamped line to a log file under _meta/."""
+    log_path = os.path.join(vault, "_meta", logfile)
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"{datetime.now().isoformat()} {message}\n")
+
+
+def _invoke_claude(cfg, prompt, timeout):
+    """Run headless `claude -p`, returning the parsed JSON object it emits.
+
+    The prompt goes via STDIN (`claude -p` reads it there when no positional
+    prompt is given): argv would hit Linux MAX_ARG_STRLEN (~128KB) on large
+    inputs and leak conversation text into `ps`.
+    """
+    cmd = [cfg["worker_claude_bin"], "-p", "--output-format", "json"]
+    if cfg["worker_model"]:
+        cmd += ["--model", cfg["worker_model"]]
+    proc = subprocess.run(cmd, input=prompt, capture_output=True,
+                          text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"claude exited {proc.returncode}: {proc.stderr.strip()[:500]}")
+    envelope = json.loads(proc.stdout, strict=False)
+    if not isinstance(envelope, dict) or "result" not in envelope:
+        raise ValueError("claude output missing 'result' envelope field")
+    if envelope.get("is_error"):
+        raise RuntimeError(
+            f"claude reported an error: {str(envelope['result'])[:500]}")
+    return _extract_json_object(envelope["result"])
 
 
 def _read_worker_state(vault):
@@ -1743,9 +1772,13 @@ def _refresh_entity_index(vault):
     _write_entity_index(vault)
 
 
-def _maybe_consolidate(vault, state, threshold):
-    """Slow-cadence maintenance: run non-LLM lint, mark consolidation due."""
-    if state.get("replays_since_consolidation", 0) < threshold:
+def _maybe_consolidate(vault, state, cfg):
+    """Slow-cadence maintenance: run non-LLM lint, mark consolidation due.
+
+    With worker_auto_consolidate enabled, also spawns a detached
+    `engram consolidate` run so the marker gets acted on without a human.
+    """
+    if state.get("replays_since_consolidation", 0) < cfg["worker_consolidation_every"]:
         return
     # Run the non-LLM lint in-process, suppressing its stdout report
     try:
@@ -1758,6 +1791,245 @@ def _maybe_consolidate(vault, state, threshold):
     with open(marker, "w") as f:
         f.write(datetime.now().isoformat() + "\n")
     state["replays_since_consolidation"] = 0
+    if cfg.get("worker_auto_consolidate"):
+        _spawn_detached(["consolidate", "--vault", vault])
+
+
+# ── consolidate (headless full consolidation) ───────────
+
+
+def _spawn_detached(argv):
+    """Spawn an engram subcommand fully detached from this process.
+
+    Prefers the installed `engram` entry point; falls back to running this
+    file directly so tests and unusual installs still work. Fail-silent.
+    """
+    try:
+        exe = shutil.which("engram")
+        cmd = [exe] + argv if exe else [sys.executable, os.path.abspath(__file__)] + argv
+        subprocess.Popen(
+            cmd,
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except Exception:
+        pass
+
+
+def _run_cmd_json(func, vault, stdin_data=None, **flags):
+    """Run an existing cmd_* function in-process, returning its parsed JSON.
+
+    Captures the command's stdout; when stdin_data is given, feeds it as the
+    command's --stdin JSON. Lets consolidate reuse the report/apply commands
+    without duplicating their logic.
+    """
+    ns = argparse.Namespace(vault=vault, stdin=stdin_data is not None, **flags)
+    out = io.StringIO()
+    old_stdin = sys.stdin
+    try:
+        if stdin_data is not None:
+            sys.stdin = io.StringIO(json.dumps(stdin_data))
+        with contextlib.redirect_stdout(out):
+            func(ns)
+    finally:
+        sys.stdin = old_stdin
+    return json.loads(out.getvalue())
+
+
+def _consolidate_feedback(vault, cfg, timeout):
+    report = _run_cmd_json(cmd_feedback, vault)
+    callouts = report.get("callouts", [])
+    if not callouts:
+        return {"skipped": "no callouts"}
+    prompt = (
+        "You are the maintenance engine for the engram knowledge graph. "
+        "Human corrections were left as callouts on entity markdown files. "
+        "Translate them into actions.\n\n"
+        f"# Callouts\n\n{json.dumps(callouts, indent=2)}\n\n"
+        "Output ONLY a JSON object (no prose, no fences):\n"
+        '{"corrections": [{"entity": "NAME", "description": "...", "entity_type": "..."}], '
+        '"merges": [{"canonical": "KEEP_NAME", "aliases": ["REMOVE_NAME"]}], '
+        '"deletes": ["NAME"]}\n'
+        "Include only actions the callouts actually request; description and "
+        "entity_type are each optional per correction. Empty arrays are fine."
+    )
+    data = _invoke_claude(cfg, prompt, timeout)
+    result = _run_cmd_json(cmd_feedback, vault, stdin_data=data)
+    return {"applied": len(result.get("applied", []))}
+
+
+def _consolidate_integrate(vault, cfg, timeout):
+    report = _run_cmd_json(cmd_integrate, vault)
+    candidates = report.get("duplicate_candidates", [])
+    if not candidates:
+        return {"skipped": "no candidates"}
+    prompt = (
+        "You are the maintenance engine for the engram knowledge graph. "
+        "Below are candidate groups of entities that share name tokens. "
+        "Decide which are TRUE duplicates — the same real-world thing under "
+        "two names — as opposed to merely related entities (a project and "
+        "its bugs/design decisions are related, NOT duplicates).\n\n"
+        f"# Candidate groups\n\n{json.dumps(candidates, indent=2)}\n\n"
+        "Rules: merge only true duplicates; keep the higher-degree or more "
+        "canonical name; when unsure, do not merge.\n\n"
+        "Output ONLY a JSON object (no prose, no fences):\n"
+        '{"merges": [{"canonical": "KEEP_NAME", "aliases": ["REMOVE_NAME"]}]}\n'
+        "An empty merges list is a perfectly good answer."
+    )
+    data = _invoke_claude(cfg, prompt, timeout)
+    if not data.get("merges"):
+        return {"merged": 0}
+    result = _run_cmd_json(cmd_integrate, vault, stdin_data=data)
+    return {"merged": len(result.get("merged", []))}
+
+
+def _consolidate_prune(vault, cfg, timeout):
+    report = _run_cmd_json(cmd_prune, vault)
+    fading, archivable = report.get("fading", []), report.get("archivable", [])
+    if not fading and not archivable:
+        return {"skipped": "nothing decaying"}
+    prompt = (
+        "You are the maintenance engine for the engram knowledge graph. "
+        "Below are entities scored as decaying (stale and weakly connected). "
+        "Decide which to archive.\n\n"
+        f"# Fading (score < 0.3)\n\n{json.dumps(fading, indent=2)}\n\n"
+        f"# Archivable (score < 0.1)\n\n{json.dumps(archivable, indent=2)}\n\n"
+        "Rules: archive isolated entities (degree 0) and clearly obsolete "
+        "facts (e.g. superseded versions). Keep anything still connected "
+        "unless clearly obsolete. Be conservative — archiving is reversible "
+        "but noisy.\n\n"
+        "Output ONLY a JSON object (no prose, no fences):\n"
+        '{"archive": ["ENTITY_NAME"]}\n'
+        "An empty archive list is a perfectly good answer."
+    )
+    data = _invoke_claude(cfg, prompt, timeout)
+    if not data.get("archive"):
+        return {"archived": 0}
+    result = _run_cmd_json(cmd_prune, vault, stdin_data=data)
+    return {"archived": len(result.get("archived", []))}
+
+
+def _consolidate_community(vault, cfg, timeout):
+    report = _run_cmd_json(cmd_community, vault)
+    communities = report.get("communities", [])
+    if not communities:
+        return {"skipped": "no communities"}
+    surprising = report.get("surprising_connections", [])
+    prompt = (
+        "You are the maintenance engine for the engram knowledge graph. "
+        "Below are knowledge clusters detected in the graph. For EACH "
+        "community, write a short specific title and a 1-3 sentence summary "
+        "of what unites its members.\n\n"
+        f"# Communities\n\n{json.dumps(communities, indent=2)}\n\n"
+        f"# Surprising cross-community connections\n\n{json.dumps(surprising, indent=2)}\n\n"
+        "Output ONLY a JSON object (no prose, no fences):\n"
+        '{"communities": [{"id": 0, "title": "...", "summary": "...", "members": ["A", "B"]}]}\n'
+        "Echo each community's id and full member list exactly as given."
+    )
+    data = _invoke_claude(cfg, prompt, timeout)
+    result = _run_cmd_json(cmd_community, vault, stdin_data=data)
+    return {"saved": len(result.get("saved", []))}
+
+
+def _consolidate_abstract(vault, cfg, timeout):
+    report = _run_cmd_json(cmd_abstract, vault)
+    dailies = report.get("daily_notes", {})
+    if not dailies:
+        return {"skipped": "no daily notes"}
+    prompt = (
+        "You are the maintenance engine for the engram knowledge graph. "
+        "Analyze the daily notes for recurring behaviors, decision "
+        "preferences, and problem patterns NOT already covered by the "
+        "existing patterns; update an existing pattern only when there is "
+        "genuinely new evidence.\n\n"
+        f"# Daily notes\n\n{json.dumps(dailies, indent=2)}\n\n"
+        f"# Existing patterns\n\n{json.dumps(report.get('existing_patterns', {}), indent=2)}\n\n"
+        "Output ONLY a JSON object (no prose, no fences):\n"
+        '{"new_patterns": [{"name": "kebab-case-name", "description": "...", '
+        '"evidence": ["YYYY-MM-DD"], "confidence": 0.7}], "updated_patterns": []}\n'
+        "Only include patterns supported by >= 2 evidence dates. "
+        "Empty arrays are a perfectly good answer."
+    )
+    data = _invoke_claude(cfg, prompt, timeout)
+    if not data.get("new_patterns") and not data.get("updated_patterns"):
+        return {"patterns_saved": 0}
+    result = _run_cmd_json(cmd_save_pattern, vault, stdin_data=data)
+    return {"patterns_saved": len(result.get("patterns_saved", []))}
+
+
+CONSOLIDATE_STAGES = [
+    ("feedback", _consolidate_feedback),
+    ("integrate", _consolidate_integrate),
+    ("prune", _consolidate_prune),
+    ("community", _consolidate_community),
+    ("abstract", _consolidate_abstract),
+]
+
+
+def cmd_consolidate(args):
+    """Run full consolidation headlessly (feedback → integrate → prune →
+    community → abstract → lint → reset), each judgment stage via claude -p.
+
+    With --detach, spawns itself in the background and returns immediately.
+    """
+    vault = args.vault
+    meta_dir = os.path.join(vault, "_meta")
+    os.makedirs(meta_dir, exist_ok=True)
+
+    if args.detach:
+        _spawn_detached(["consolidate", "--vault", vault,
+                         "--timeout", str(args.timeout)])
+        print(json.dumps({
+            "status": "started",
+            "log": os.path.join(meta_dir, "consolidate.log"),
+            "message": "Consolidation running in background; progress in the log file.",
+        }))
+        return
+
+    # Single-flight lock: another consolidate running → exit 0 immediately
+    lock_file = open(os.path.join(meta_dir, "consolidate.lock"), "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        print(json.dumps({"status": "skipped",
+                          "reason": "another consolidate is running"}))
+        return
+
+    def log(msg):
+        _worker_log(vault, msg, logfile="consolidate.log")
+
+    try:
+        cfg = _load_worker_config()
+        stages = {}
+        log("START")
+        for name, stage in CONSOLIDATE_STAGES:
+            try:
+                stages[name] = stage(vault, cfg, args.timeout)
+                log(f"OK {name} {json.dumps(stages[name])}")
+            except Exception as e:
+                # Stages are independent maintenance passes: a failure in one
+                # (model hiccup, bad JSON) shouldn't abandon the rest.
+                stages[name] = {"error": str(e)[:300]}
+                log(f"ERROR {name} {type(e).__name__}: {e}")
+
+        try:
+            lint = _run_cmd_json(cmd_lint, vault)
+            stages["lint"] = {"issues": lint.get("issues", 0)}
+            log(f"OK lint issues={lint.get('issues', 0)}")
+        except Exception as e:
+            stages["lint"] = {"error": str(e)[:300]}
+            log(f"ERROR lint {type(e).__name__}: {e}")
+
+        # Reset the consolidation counter + due marker, same as the manual flow
+        _run_cmd_json(cmd_consolidation, vault, reset=True)
+        log("DONE")
+        print(json.dumps({"status": "ok", "stages": stages}))
+    finally:
+        lock_file.close()
 
 
 def cmd_worker(args):
@@ -1794,29 +2066,12 @@ def cmd_worker(args):
             return
 
         # 3. Headless tool-less extraction (model returns JSON text only).
-        # The prompt goes via STDIN (`claude -p` reads it there when no
-        # positional prompt is given): argv would hit Linux MAX_ARG_STRLEN
-        # (~128KB) on a large backlog and leak conversation text into `ps`.
         prompt = _build_extraction_prompt(turns)
-        cmd = [cfg["worker_claude_bin"], "-p", "--output-format", "json"]
-        if cfg["worker_model"]:
-            cmd += ["--model", cfg["worker_model"]]
         if args.verbose:
             print(f"worker: invoking {cfg['worker_claude_bin']} for {len(turns)} turn(s)",
                   file=sys.stderr)
         try:
-            proc = subprocess.run(cmd, input=prompt, capture_output=True,
-                                  text=True, timeout=args.timeout)
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"claude exited {proc.returncode}: {proc.stderr.strip()[:500]}")
-            envelope = json.loads(proc.stdout, strict=False)
-            if not isinstance(envelope, dict) or "result" not in envelope:
-                raise ValueError("claude output missing 'result' envelope field")
-            if envelope.get("is_error"):
-                raise RuntimeError(
-                    f"claude reported an error: {str(envelope['result'])[:500]}")
-            data = _extract_json_object(envelope["result"])
+            data = _invoke_claude(cfg, prompt, args.timeout)
 
             # Validate BEFORE _replay_data so a batch that would crash
             # mid-landing never writes a dedup marker (which would make the
@@ -1834,7 +2089,7 @@ def cmd_worker(args):
                 _refresh_entity_index(vault)
                 state["replays_since_consolidation"] = \
                     state.get("replays_since_consolidation", 0) + 1
-                _maybe_consolidate(vault, state, cfg["worker_consolidation_every"])
+                _maybe_consolidate(vault, state, cfg)
 
             # 7. Persist the watermark only after a fully successful run
             state["offset"] = new_offset
@@ -2027,6 +2282,10 @@ def main():
     p.add_argument("--timeout", type=int, default=300, help="Timeout in seconds for the claude call (default: 300)")
     p.add_argument("--verbose", action="store_true", help="Log progress to stderr")
 
+    p = sub.add_parser("consolidate", help="Run full consolidation headlessly (each stage via claude -p)")
+    p.add_argument("--timeout", type=int, default=300, help="Timeout in seconds per claude call (default: 300)")
+    p.add_argument("--detach", action="store_true", help="Spawn in background and return immediately")
+
     # Global option: all subparsers get --vault
     for name, sp in sub.choices.items():
         if name not in ("install", "uninstall"):
@@ -2047,7 +2306,8 @@ def main():
      "save-pattern": cmd_save_pattern, "feedback": cmd_feedback,
      "status": cmd_status, "query": cmd_query,
      "context": cmd_context, "lint": cmd_lint,
-     "consolidation": cmd_consolidation, "worker": cmd_worker}[args.command](args)
+     "consolidation": cmd_consolidation, "worker": cmd_worker,
+     "consolidate": cmd_consolidate}[args.command](args)
 
 
 if __name__ == "__main__":
