@@ -16,7 +16,7 @@ setup(
     packages=find_packages(),
     py_modules=["engram_cli"],
     python_requires=">=3.10",
-    install_requires=["networkx"],
+    install_requires=["networkx", "scipy"],
     entry_points={"console_scripts": ["engram=engram_cli:main"]},
     include_package_data=True,
     package_data={
