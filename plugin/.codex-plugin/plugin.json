@@ -1,6 +1,6 @@
 {
   "name": "engram",
-  "version": "0.1.2",
+  "version": "0.2.0+codex.20260824075154",
   "description": "Persistent memory for Codex backed by an Obsidian knowledge graph",
   "author": {
     "name": "qianheng",
@@ -10,7 +10,12 @@
   "homepage": "https://github.com/qianheng-aws/engram",
   "repository": "https://github.com/qianheng-aws/engram",
   "license": "MIT",
-  "keywords": ["memory", "knowledge-graph", "obsidian", "codex"],
+  "keywords": [
+    "memory",
+    "knowledge-graph",
+    "obsidian",
+    "codex"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Engram",
@@ -18,7 +23,10 @@
     "longDescription": "Extract durable knowledge from Codex tasks, query prior work, inspect graph health, and run memory consolidation workflows.",
     "developerName": "qianheng",
     "category": "Productivity",
-    "capabilities": ["Read", "Write"],
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
     "websiteURL": "https://github.com/qianheng-aws/engram",
     "defaultPrompt": "Use $engram to extract durable knowledge from this task."
   }

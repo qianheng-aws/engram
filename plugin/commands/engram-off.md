@@ -1,4 +1,4 @@
-# Engram Off — Disable auto-capture on session end
+# Engram Off — Disable automatic capture and memory injection
 
 ```bash
 engram auto off

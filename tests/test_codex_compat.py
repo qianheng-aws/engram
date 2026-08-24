@@ -1,10 +1,9 @@
 """Tests for Codex CLI compatibility.
 
-Covers the four integration points:
+Covers the integration points:
 1. engram-hook parses Codex rollout transcripts (and still parses CC format)
-2. engram-pretool handles Codex's exec_command tool + hookSpecificOutput wire
-3. the Codex plugin exposes the $engram skill through a repo marketplace
-4. `engram codex-setup` merges hooks.json idempotently and installs prompt fallbacks
+2. the Codex plugin exposes the $engram skill through a repo marketplace
+3. `engram codex-setup` migrates hooks idempotently and installs prompt fallbacks
 
 No real Codex or model calls — everything runs against fixture files.
 """
@@ -258,7 +257,17 @@ def test_codex_plugin_bundle_is_discoverable():
 
     with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")) as f:
         claude_manifest = json.load(f)
+    assert claude_manifest["version"] == "0.2.0"
     assert claude_manifest["hooks"] == "./hooks/claude-hooks.json"
+    with open(os.path.join(REPO_ROOT, ".claude-plugin", "marketplace.json")) as f:
+        claude_marketplace = json.load(f)
+    assert claude_marketplace["plugins"][0]["source"] == "./plugin"
+    with open(os.path.join(PLUGIN_ROOT, "hooks", "claude-hooks.json")) as f:
+        claude_hooks = json.load(f)["hooks"]
+    assert "PreToolUse" not in claude_hooks
+    assert "SessionStart" in claude_hooks
+    assert claude_hooks["SessionStart"][0]["hooks"][0]["command"].endswith(
+        "engram-context session")
     with open(os.path.join(PLUGIN_ROOT, "hooks", "hooks.json")) as f:
         assert json.load(f)["hooks"] == {}, "Codex plugin must not duplicate user hooks"
     print("  ✅ codex plugin: manifest + $engram skill + marketplace discoverable")
@@ -285,13 +294,17 @@ def test_codex_setup_writes_hooks_and_prompts():
         with open(os.path.join(codex_home, "hooks.json")) as f:
             doc = json.load(f)
         hooks = doc["hooks"]
-        for event in ("UserPromptSubmit", "Stop", "SessionEnd", "PreToolUse"):
+        for event in ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"):
             groups = hooks[event]
             commands = [h["command"] for g in groups for h in g["hooks"]]
             assert any("engram-" in c for c in commands), (event, commands)
             # absolute paths only — no ${CLAUDE_PLUGIN_ROOT}
             assert all(os.path.isabs(c.split()[0]) for c in commands), commands
-        assert hooks["PreToolUse"][0]["matcher"] == "exec_command"
+        assert "PreToolUse" not in hooks
+        assert hooks["SessionStart"][0]["hooks"][0]["command"].endswith(
+            "engram-context session")
+        assert hooks["UserPromptSubmit"][0]["hooks"][0]["command"].endswith(
+            "engram-context prompt")
         assert hooks["Stop"][0]["hooks"][0]["command"].endswith("engram-hook Stop")
 
         prompts_dir = os.path.join(codex_home, "prompts")
@@ -314,8 +327,11 @@ def test_codex_setup_idempotent_and_preserves_foreign_hooks():
 
         foreign = {"matcher": None, "hooks": [
             {"type": "command", "command": "/usr/local/bin/my-linter", "timeout": 5}]}
+        stale_pretool = {"matcher": "exec_command", "hooks": [
+            {"type": "command", "command": "/old/plugin/bin/engram-pretool", "timeout": 10}]}
         with open(os.path.join(codex_home, "hooks.json"), "w") as f:
-            json.dump({"description": "mine", "hooks": {"Stop": [foreign]}}, f)
+            json.dump({"description": "mine", "hooks": {
+                "Stop": [foreign], "PreToolUse": [stale_pretool]}}, f)
 
         _run_codex_setup(vault, config, codex_home)
         _run_codex_setup(vault, config, codex_home)
@@ -325,6 +341,7 @@ def test_codex_setup_idempotent_and_preserves_foreign_hooks():
         stop_commands = [h["command"] for g in doc["hooks"]["Stop"] for h in g["hooks"]]
         assert stop_commands.count("/usr/local/bin/my-linter") == 1
         assert len([c for c in stop_commands if "engram-hook" in c]) == 1
+        assert "PreToolUse" not in doc["hooks"], "stale Engram PreToolUse must be removed"
         assert doc["description"] == "mine"
         print("  ✅ codex-setup: idempotent, foreign hooks preserved")
 

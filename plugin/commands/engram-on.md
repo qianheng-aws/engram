@@ -1,5 +1,5 @@
-# Engram On — Enable auto-capture on session end
+# Engram On — Enable automatic capture and memory injection
 
 ```bash
-engram auto on && echo "✅ Engram hook enabled — sessions will be captured to pending.jsonl and processed by background worker"
+engram auto on && echo "✅ Engram enabled — sessions are captured and relevant memory is injected automatically"
 ```

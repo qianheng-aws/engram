@@ -252,33 +252,61 @@ def cmd_init(args):
     print(json.dumps({"status": "ok", "actions": actions}))
 
 
-def cmd_auto(args):
-    """Toggle auto-replay hook on/off."""
-    vault = args.vault
-    hook_flag = os.path.join(vault, "_meta", "hook-enabled")
-    if args.auto_action == "on":
-        os.makedirs(os.path.dirname(hook_flag), exist_ok=True)
-        open(hook_flag, "w").close()
-        print(json.dumps({
-            "status": "ok",
-            "auto_replay": "enabled",
-            "note": "Automatic background extraction enabled (turns captured and processed in background)"
-        }))
-    elif args.auto_action == "off":
-        if os.path.exists(hook_flag):
-            os.remove(hook_flag)
-        print(json.dumps({
-            "status": "ok",
-            "auto_replay": "disabled",
-            "note": "Automatic background extraction disabled"
-        }))
+def _auto_flags(vault):
+    meta = os.path.join(vault, "_meta")
+    return {
+        "legacy": os.path.join(meta, "hook-enabled"),
+        "capture": os.path.join(meta, "capture-enabled"),
+        "injection": os.path.join(meta, "injection-enabled"),
+    }
+
+
+def _auto_state(vault):
+    flags = _auto_flags(vault)
+    modern = os.path.exists(flags["capture"]) or os.path.exists(flags["injection"])
+    legacy = os.path.exists(flags["legacy"])
+    capture = os.path.exists(flags["capture"]) if modern else legacy
+    injection = os.path.exists(flags["injection"]) if modern else legacy
+    if capture and injection:
+        mode = "on"
+    elif capture:
+        mode = "capture-only"
+    elif injection:
+        mode = "injection-only"
     else:
-        enabled = os.path.exists(hook_flag)
-        print(json.dumps({
-            "status": "ok",
-            "auto_replay": "enabled" if enabled else "disabled",
-            "note": "Background extraction " + ("active" if enabled else "inactive")
-        }))
+        mode = "off"
+    return {"mode": mode, "capture_enabled": capture,
+            "injection_enabled": injection}
+
+
+def _set_auto_mode(vault, mode):
+    flags = _auto_flags(vault)
+    os.makedirs(os.path.dirname(flags["legacy"]), exist_ok=True)
+    enabled = {
+        "on": {"legacy", "capture", "injection"},
+        "capture-only": {"capture"},
+        "injection-only": {"injection"},
+        "off": set(),
+    }[mode]
+    for name, path in flags.items():
+        if name in enabled:
+            open(path, "a").close()
+        elif os.path.exists(path):
+            os.remove(path)
+
+
+def cmd_auto(args):
+    """Configure capture and context injection independently."""
+    if args.auto_action != "status":
+        _set_auto_mode(args.vault, args.auto_action)
+    state = _auto_state(args.vault)
+    notes = {
+        "on": "Background capture and relevant-memory injection are active",
+        "capture-only": "Background capture is active; automatic injection is disabled",
+        "injection-only": "Relevant-memory injection is active; background capture is disabled",
+        "off": "Background capture and automatic injection are disabled",
+    }
+    print(json.dumps({"status": "ok", **state, "note": notes[state["mode"]]}))
 
 
 # ── replay ──────────────────────────────────────────────
@@ -1427,6 +1455,9 @@ WORKER_DEFAULTS = {
     # ...unless the oldest pending turn is older than this, which forces a
     # run regardless of batch size so a quiet queue still lands eventually.
     "worker_max_batch_age_hours": 24,
+    # Compact pending.jsonl after enough consumed bytes accumulate. A separate
+    # pending lock preserves turns appended while the worker is running.
+    "worker_compact_after_bytes": 5 * 1024 * 1024,
 }
 
 # Fallback extraction rules, used only if plugin/commands/engram.md cannot be
@@ -1842,6 +1873,9 @@ def _build_entity_index(vault):
         if not attrs:
             continue
 
+        entity_type = attrs.get("entity_type", "?")
+        desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
+
         # Extract keywords from entity name (graph nodes store no alias attr)
         name_tokens = re.split(r'[_\-\s]+', entity_name)
         keywords = []
@@ -1851,9 +1885,16 @@ def _build_entity_index(vault):
             if len(token_lower) >= 3 and token_upper not in INDEX_STOP_WORDS:
                 keywords.append(token_lower)
 
+        # Entity names are conventionally English, while prompts may be
+        # Chinese. Index description n-grams without adding broad English
+        # description terms that would create noisy matches.
+        for run in re.findall(r"[\u3400-\u9fff]+", desc):
+            for width in range(2, min(4, len(run)) + 1):
+                keywords.extend(run[i:i + width]
+                                for i in range(len(run) - width + 1))
+        keywords = list(dict.fromkeys(keywords))[:64]
+
         # Build snippet: "- NAME (TYPE): description... | related: neighbor1, neighbor2"
-        entity_type = attrs.get("entity_type", "?")
-        desc = (attrs.get("description", "") or "").split(GRAPH_FIELD_SEP)[0]
         # Trim description to ~120 chars
         if len(desc) > 120:
             desc = desc[:120].rsplit(" ", 1)[0] + "..."
@@ -1872,6 +1913,7 @@ def _build_entity_index(vault):
         index[entity_name] = {
             "keywords": keywords,
             "snippet": snippet,
+            "local_path": attrs.get("local_path", "") or "",
         }
 
     return index
@@ -1881,7 +1923,7 @@ def _write_entity_index(vault):
     """Atomically write _meta/entity-index.json (tmp + rename)."""
     index = _build_entity_index(vault)
     index_data = {
-        "version": 1,
+        "version": 2,
         "entities": index,
     }
 
@@ -1900,6 +1942,42 @@ def _write_entity_index(vault):
 def _refresh_entity_index(vault):
     """Rebuild _meta/entity-index.json in-process."""
     _write_entity_index(vault)
+
+
+def _compact_pending(vault, consumed_offset, threshold):
+    """Drop a consumed queue prefix while preserving concurrent appends.
+
+    Returns the equivalent offset in the compacted file. Compaction happens
+    only after a successful replay, under the same lock used by hook appends.
+    """
+    if not isinstance(threshold, int) or threshold < 0:
+        threshold = WORKER_DEFAULTS["worker_compact_after_bytes"]
+    if consumed_offset < threshold:
+        return consumed_offset
+
+    meta_dir = os.path.join(vault, "_meta")
+    pending_path = os.path.join(meta_dir, "pending.jsonl")
+    if not os.path.exists(pending_path):
+        return 0
+
+    lock_file = open(os.path.join(meta_dir, "pending.lock"), "a+")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        size = os.path.getsize(pending_path)
+        if consumed_offset > size:
+            return 0
+        with open(pending_path, "rb") as source:
+            source.seek(consumed_offset)
+            remaining = source.read()
+        tmp_path = pending_path + ".tmp"
+        with open(tmp_path, "wb") as target:
+            target.write(remaining)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(tmp_path, pending_path)
+        return 0
+    finally:
+        lock_file.close()
 
 
 def _maybe_consolidate(vault, state, cfg):
@@ -2189,8 +2267,10 @@ def cmd_worker(args):
 
         # 2. Nothing new → cheap idempotent no-op
         if not turns:
-            if new_offset != state.get("offset", 0):
-                state["offset"] = new_offset
+            compacted_offset = _compact_pending(
+                vault, new_offset, cfg.get("worker_compact_after_bytes"))
+            if compacted_offset != state.get("offset", 0):
+                state["offset"] = compacted_offset
                 _write_worker_state(vault, state)
             print(json.dumps({"processed": 0, "entities": 0, "relations": 0}))
             return
@@ -2252,8 +2332,10 @@ def cmd_worker(args):
                     state.get("replays_since_consolidation", 0) + 1
                 _maybe_consolidate(vault, state, cfg)
 
-            # 7. Persist the watermark only after a fully successful run
-            state["offset"] = new_offset
+            # 7. Compact a large consumed prefix under the append lock, then
+            # persist the equivalent watermark for the rewritten queue.
+            state["offset"] = _compact_pending(
+                vault, new_offset, cfg.get("worker_compact_after_bytes"))
             _write_worker_state(vault, state)
         except Exception as e:
             # Leave the watermark unchanged so a later run retries these turns
@@ -2398,13 +2480,18 @@ def cmd_consolidation(args):
 # Hook entries engram registers in Codex's hooks.json. Codex's hook engine is
 # Claude-compatible (same event names, same stdin payload fields) but hooks
 # cannot ship inside a Codex plugin, so they are registered at the user level.
-# Timeouts are in seconds. The PreToolUse matcher targets Codex's shell tool
-# (exec_command) instead of Claude Code's Grep/Glob/Read/Agent.
+# Timeouts are in seconds. Stable memory is injected once at SessionStart;
+# prompt hooks add only matching entities. PreToolUse is intentionally absent.
 def _codex_hook_entries(bin_dir):
     return {
+        "SessionStart": {
+            "matcher": None,
+            "command": f"{os.path.join(bin_dir, 'engram-context')} session",
+            "timeout": 10,
+        },
         "UserPromptSubmit": {
             "matcher": None,
-            "command": f"{os.path.join(bin_dir, 'engram-context')}",
+            "command": f"{os.path.join(bin_dir, 'engram-context')} prompt",
             "timeout": 10,
         },
         "Stop": {
@@ -2415,11 +2502,6 @@ def _codex_hook_entries(bin_dir):
         "SessionEnd": {
             "matcher": None,
             "command": f"{os.path.join(bin_dir, 'engram-hook')} SessionEnd",
-            "timeout": 10,
-        },
-        "PreToolUse": {
-            "matcher": "exec_command",
-            "command": f"{os.path.join(bin_dir, 'engram-pretool')}",
             "timeout": 10,
         },
     }
@@ -2433,15 +2515,27 @@ def _merge_codex_hooks(existing, entries):
     updates paths without stacking entries. Non-engram hooks are preserved.
     """
     events = existing.setdefault("hooks", {})
-    for event, spec in entries.items():
-        groups = events.setdefault(event, [])
-        # Drop previously-registered engram handlers from this event
-        for group in groups:
+    # Remove stale Engram handlers globally, including the retired
+    # PreToolUse registration from older releases.
+    for event, groups in list(events.items()):
+        cleaned = []
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                cleaned.append(group)
+                continue
             group["hooks"] = [
                 h for h in group.get("hooks", [])
                 if "engram-" not in str(h.get("command", ""))
             ]
-        events[event] = [g for g in groups if g.get("hooks")]
+            if group["hooks"]:
+                cleaned.append(group)
+        if cleaned:
+            events[event] = cleaned
+        else:
+            events.pop(event, None)
+
+    for event, spec in entries.items():
+        groups = events.setdefault(event, [])
         events[event].append({
             "matcher": spec["matcher"],
             "hooks": [{
@@ -2468,7 +2562,7 @@ def cmd_codex_setup(args):
     bin_dir = os.path.join(repo_root, "plugin", "bin")
     commands_dir = os.path.join(repo_root, "plugin", "commands")
 
-    missing = [s for s in ("engram-hook", "engram-context", "engram-pretool")
+    missing = [s for s in ("engram-hook", "engram-context")
                if not os.path.isfile(os.path.join(bin_dir, s))]
     if missing:
         print(json.dumps({"status": "error",
@@ -2511,8 +2605,7 @@ def cmd_codex_setup(args):
                                 os.path.join(prompts_dir, fname))
                 prompts.append("/prompts:" + fname[:-3])
 
-    hook_enabled = os.path.exists(
-        os.path.join(args.vault, "_meta", "hook-enabled"))
+    auto_state = _auto_state(args.vault)
     print(json.dumps({
         "status": "ok",
         "hooks_file": hooks_path,
@@ -2522,8 +2615,10 @@ def cmd_codex_setup(args):
         "plugin_manifest": os.path.join(repo_root, "plugin", ".codex-plugin",
                                         "plugin.json"),
         "skill": "$engram",
-        "capture_enabled": hook_enabled,
-        "notes": ([] if hook_enabled else
+        "capture_enabled": auto_state["capture_enabled"],
+        "injection_enabled": auto_state["injection_enabled"],
+        "auto_mode": auto_state["mode"],
+        "notes": ([] if auto_state["capture_enabled"] else
                   ["background capture is off — run `engram auto on` to enable"]) + [
             "Codex asks you to trust new hooks on first interactive run",
             "Install the repo marketplace plugin to use $engram in the Codex app",
@@ -2542,8 +2637,12 @@ def main():
     p = sub.add_parser("init", help="Initialize vault and save path to config")
     p.add_argument("init_path", nargs="?", default=None, help="Vault path (default: ~/.engram/vault)")
 
-    p = sub.add_parser("auto", help="Toggle auto-capture on session end")
-    p.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"], help="on/off/status (default: status)")
+    p = sub.add_parser("auto", help="Configure capture and memory injection")
+    p.add_argument(
+        "action", nargs="?", default="status",
+        choices=["on", "off", "capture-only", "injection-only", "status"],
+        help="on/off/capture-only/injection-only/status (default: status)",
+    )
 
     # Core commands
     p = sub.add_parser("status", help="Show vault statistics, god nodes, and pending sessions")

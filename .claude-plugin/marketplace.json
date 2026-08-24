@@ -7,11 +7,7 @@
         {
             "name": "engram",
             "description": "Persistent memory — extract knowledge from sessions into an Obsidian vault knowledge graph",
-            "source": {
-                "source": "git-subdir",
-                "url": "https://github.com/qianheng-aws/engram.git",
-                "path": "plugin"
-            }
+            "source": "./plugin"
         }
     ]
 }

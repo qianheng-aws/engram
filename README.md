@@ -2,7 +2,7 @@
 
 # 🧠 Engram
 
-**Persistent memory for Claude Code — your coding sessions become a knowledge graph**
+**Persistent memory for Claude Code and Codex — your coding sessions become a knowledge graph**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -22,7 +22,7 @@ You work in Claude Code as usual. Engram captures, extracts, and retrieves your 
 **Automatic flow:**
 - **Capture** — Every session is appended to a queue as you work
 - **Extraction** — A background worker extracts entities and relations (no API keys, CC does it)
-- **Retrieval** — Every prompt gets relevant context from your knowledge graph injected automatically
+- **Retrieval** — A stable digest is injected once per session; later prompts receive only matching entities
 
 No manual `/engram` needed. Your knowledge accumulates across sessions and gets injected into future sessions automatically.
 
@@ -37,9 +37,9 @@ Behind the scenes:
 CC Session → Stop hook → pending.jsonl → engram worker → Entity Extraction → Knowledge Graph
                                           (headless CC)    (NetworkX)        (Markdown)
                                                                 ↓
-                                                        context-cache.md
+                       SessionStart hook ← context-cache.md → stable digest once
                                                                 ↓
-          UserPromptSubmit hook → Memory Context (digest + query) → injected into next prompt
+          UserPromptSubmit hook → matched entities only → injected when relevant
 ```
 
 ## 🏗️ Architecture
@@ -88,12 +88,14 @@ claude plugin install engram@engram-echo
 Vault, config, and CLAUDE.md prompt all auto-initialize on first use. Then enable the automatic flow (one-time):
 
 ```bash
-engram auto on    # enable auto-capture — the hooks stay inactive until this runs
+engram auto on    # enable capture + injection — hooks stay inactive until this runs
 ```
 
 Optional:
 - `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
-- `engram auto off` — disable auto-capture again at any time
+- `engram auto capture-only` — capture without automatic context injection
+- `engram auto injection-only` — inject memory without capturing sessions
+- `engram auto off` — disable both features
 
 ### Using with Codex CLI and Desktop
 
@@ -110,7 +112,7 @@ codex plugin add engram@engram-local
 ```
 
 What this does:
-- **Hooks** — merges engram's four hooks (`UserPromptSubmit` memory injection, `Stop`/`SessionEnd` background capture, `PreToolUse` entity context on `exec_command`) into `~/.codex/hooks.json`. They remain user-level so Codex can use its own matcher and timeout semantics without duplicating the Claude plugin hooks. The merge is idempotent and preserves any hooks you already have; a hooks.json it cannot parse aborts the setup instead of being overwritten.
+- **Hooks** — merges four lightweight hooks (`SessionStart` stable digest, `UserPromptSubmit` matched memory, and `Stop`/`SessionEnd` background capture) into `~/.codex/hooks.json`. `PreToolUse` is intentionally disabled in both Codex and Claude Code. Setup removes stale Engram handlers, remains idempotent, and preserves unrelated hooks; invalid JSON aborts instead of being overwritten.
 - **Plugin** — installs the Engram card and `$engram` skill for Codex Desktop and CLI. Use `$engram`, `$engram query ...`, or ask naturally for Engram status, recall, capture, or consolidation.
 - **Prompt fallback** — copies the legacy command documents to `~/.codex/prompts/`. In Codex CLI/IDE they are invoked as `/prompts:engram`, not `/engram`. Custom prompts are deprecated and do not appear as Desktop slash commands.
 
@@ -150,7 +152,7 @@ claude plugin update engram@engram-echo
 
 ## 🎮 Commands
 
-Once auto-capture is enabled (`engram auto on`), Engram works automatically — no manual commands needed for routine sessions.
+Once automatic capture and injection are enabled (`engram auto on`), Engram works without manual commands for routine sessions.
 
 **Optional power-user commands:**
 
@@ -162,8 +164,8 @@ Once auto-capture is enabled (`engram auto on`), Engram works automatically — 
 | `/engram-community` | Detect and summarize knowledge clusters (Louvain) |
 | `/engram-status` | Show vault statistics, graph analysis |
 | `/engram-query <question>` | Search knowledge graph (keyword + graph traversal) |
-| `/engram-on` | Enable auto-capture (required once — hooks are inactive until enabled) |
-| `/engram-off` | Disable auto-capture |
+| `/engram-on` | Enable automatic capture and memory injection |
+| `/engram-off` | Disable automatic capture and memory injection |
 
 ### Automatic flow vs manual commands
 
@@ -252,14 +254,17 @@ Open the vault in [Obsidian](https://obsidian.md) to get an interactive knowledg
 ├── 📁 daily/                 # Session summaries by date
 ├── 📁 patterns/              # Discovered behavioral patterns
 └── 📁 _meta/                 # System data
-    ├── pending.jsonl         #   Queue of captured turns (watermark-based)
+    ├── pending.jsonl         #   Queue of captured turns (watermark + compaction)
+    ├── pending.lock          #   Coordinates hook appends with queue compaction
     ├── worker-state.json     #   Worker offset + consolidation counter
-    ├── context-cache.md      #   Stable digest for UserPromptSubmit injection
-    ├── entity-index.json     #   Precomputed entity keywords + snippets for fast prompt matching
+    ├── context-cache.md      #   Stable digest for SessionStart injection
+    ├── entity-index.json     #   Keywords, CJK n-grams, snippets, and local paths
     ├── worker.log            #   Worker run log (timestamped entries)
     ├── worker.lock           #   Single-flight lock (fcntl.LOCK_EX)
     ├── consolidation-due     #   Marker file when consolidation threshold reached
-    ├── hook-enabled          #   Kill switch for hooks (auto on/off)
+    ├── capture-enabled       #   Automatic session capture switch
+    ├── injection-enabled     #   Automatic context injection switch
+    ├── hook-enabled          #   Legacy combined switch (still supported)
     └── graph.graphml         #   NetworkX GraphML
 ```
 
@@ -309,7 +314,8 @@ Every entity links to related entities via `[[wikilinks]]` — Obsidian renders 
 ```bash
 # Setup
 engram init [PATH]                              # Initialize vault + register in ~/.claude/CLAUDE.md
-engram auto [on|off|status]                     # Toggle auto-capture (run `on` once to enable hooks)
+engram auto [on|off|capture-only|injection-only|status]
+                                                # Configure capture and injection independently
 engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
 engram uninstall                                # Remove from ~/.claude/CLAUDE.md
 engram codex-setup                              # Register Codex hooks + legacy CLI prompt fallbacks
@@ -353,7 +359,12 @@ engram consolidation --reset                    # Reset counter (after full cons
   "worker_consolidation_every": 10,
   "worker_max_turns_per_run": 20,
   "worker_gleaning": 1,
-  "context_max_chars": 2000
+  "worker_min_batch_turns": 10,
+  "worker_max_batch_age_hours": 24,
+  "worker_compact_after_bytes": 5242880,
+  "worker_auto_consolidate": false,
+  "context_max_chars": 1000,
+  "context_session_max_chars": 1200
 }
 ```
 
@@ -364,7 +375,10 @@ engram consolidation --reset                    # Reset counter (after full cons
 - `worker_gleaning` — LightRAG-style gleaning rounds after the initial extraction: each round re-prompts the model with its previous output and merges in anything it missed; an empty round stops early, and a failed round never fails the batch. `0` disables (default: `1`)
 - `worker_min_batch_turns` — batching gate: a worker run defers (queue untouched, no LLM call) until at least this many turns are pending. Trades memory freshness for fewer extraction calls (default: `1` = process every run)
 - `worker_max_batch_age_hours` — overrides the batch gate once the oldest pending turn is this old, so a quiet queue still lands (default: `24`)
-- `context_max_chars` — Max chars in UserPromptSubmit injection (default: `2000`)
+- `worker_compact_after_bytes` — compact the consumed queue prefix after this many bytes while preserving concurrent appends (default: `5242880`)
+- `worker_auto_consolidate` — spawn full consolidation automatically at the replay threshold; keeping this `false` avoids surprise background model work (default: `false`)
+- `context_max_chars` — Max chars in matched UserPromptSubmit injection (default: `1000`)
+- `context_session_max_chars` — Max chars in the stable SessionStart digest (default: `1200`)
 
 ## 📄 License
 

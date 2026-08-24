@@ -515,7 +515,7 @@ def test_entity_index_seeded():
             index_data = json.load(f)
 
         # Check schema
-        assert index_data.get("version") == 1
+        assert index_data.get("version") == 2
         assert "entities" in index_data
         entities = index_data["entities"]
 
@@ -527,6 +527,7 @@ def test_entity_index_seeded():
         entity = entities[entity_name]
         assert "keywords" in entity
         assert "snippet" in entity
+        assert "local_path" in entity
         assert isinstance(entity["keywords"], list)
         assert isinstance(entity["snippet"], str)
 
@@ -561,8 +562,30 @@ def test_entity_index_empty_vault():
         with open(index_path) as f:
             index_data = json.load(f)
 
-        assert index_data == {"version": 1, "entities": {}}
+        assert index_data == {"version": 2, "entities": {}}
         print("  ✅ entity-index.json: empty vault creates valid empty index")
+
+
+def test_entity_index_includes_cjk_terms_and_local_path():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        local_path = os.path.join(tmpdir, "engram")
+        payload = json.dumps({
+            "date": "2026-08-24",
+            "entities": [{
+                "name": "MEMORY_INJECTION", "entity_type": "CONCEPT",
+                "description": "自动记忆注入性能优化", "confidence": "EXTRACTED",
+                "local_path": local_path,
+            }],
+            "relations": [], "daily_summary": "seed",
+        })
+        _run(["replay", "--stdin"], vault, stdin_data=payload)
+        _run(["context", "--write-cache"], vault)
+        with open(os.path.join(vault, "_meta", "entity-index.json")) as f:
+            entity = json.load(f)["entities"]["MEMORY_INJECTION"]
+        assert "记忆" in entity["keywords"]
+        assert "记忆注入" in entity["keywords"]
+        assert entity["local_path"] == local_path
 
 
 if __name__ == "__main__":

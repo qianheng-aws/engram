@@ -1,5 +1,6 @@
 {
     "name": "engram",
+    "version": "0.2.0",
     "description": "Persistent memory for Claude Code — extract knowledge from sessions into an Obsidian vault knowledge graph",
     "hooks": "./hooks/claude-hooks.json",
     "author": {

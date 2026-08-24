@@ -73,6 +73,68 @@ def test_stop_hook_spawns_worker_on_substantive_turn():
         print("  ✅ stop hook spawns worker on substantive turn")
 
 
+def test_stop_hook_defers_spawn_until_batch_ready():
+    """Capture remains cheap below the worker batch threshold."""
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-hook")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "capture-enabled"), "w").close()
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault, "worker_min_batch_turns": 3,
+                       "worker_max_batch_age_hours": 24}, f)
+
+        stub_dir = os.path.join(tmpdir, "bin")
+        os.makedirs(stub_dir)
+        marker_path = os.path.join(tmpdir, "worker-spawned.marker")
+        _make_stub_engram(stub_dir, marker_path)
+        env = {**os.environ, "ENGRAM_CONFIG": config_path,
+               "PATH": f"{stub_dir}:{os.environ['PATH']}"}
+
+        for i in range(2):
+            result = subprocess.run(
+                [sys.executable, hook_path, "Stop"],
+                input=json.dumps({
+                    "session_id": f"batch-{i}",
+                    "last_assistant_message": "A substantive captured turn that is long enough for batching.",
+                }), capture_output=True, text=True, env=env)
+            assert result.returncode == 0
+        time.sleep(0.2)
+        assert not os.path.exists(marker_path)
+
+        subprocess.run(
+            [sys.executable, hook_path, "Stop"],
+            input=json.dumps({
+                "session_id": "batch-2",
+                "last_assistant_message": "The third substantive turn reaches the configured batch threshold.",
+            }), capture_output=True, text=True, env=env, check=True)
+        for _ in range(20):
+            if os.path.exists(marker_path):
+                break
+            time.sleep(0.1)
+        assert os.path.exists(marker_path)
+
+
+def test_stop_hook_injection_only_does_not_capture():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        open(os.path.join(vault, "_meta", "injection-enabled"), "w").close()
+        config_path = os.path.join(tmpdir, "config.json")
+        with open(config_path, "w") as f:
+            json.dump({"vault": vault}, f)
+        result = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                          "plugin", "bin", "engram-hook"), "Stop"],
+            input=json.dumps({
+                "session_id": "injection-only",
+                "last_assistant_message": "This long message must not be captured in injection-only mode.",
+            }), capture_output=True, text=True,
+            env={**os.environ, "ENGRAM_CONFIG": config_path})
+        assert result.returncode == 0
+        assert not os.path.exists(os.path.join(vault, "_meta", "pending.jsonl"))
+
+
 def test_stop_hook_no_spawn_on_trivial_turn():
     """Stop hook does NOT spawn worker when turn is trivial (nothing appended)."""
     hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-hook")
@@ -319,6 +381,8 @@ def test_sessionend_no_spawn_when_disabled():
 if __name__ == "__main__":
     print("Testing Task 5: Stop/SessionEnd detached worker spawn...")
     test_stop_hook_spawns_worker_on_substantive_turn()
+    test_stop_hook_defers_spawn_until_batch_ready()
+    test_stop_hook_injection_only_does_not_capture()
     test_stop_hook_no_spawn_on_trivial_turn()
     test_stop_hook_no_spawn_when_disabled()
     test_stop_hook_exits_promptly()

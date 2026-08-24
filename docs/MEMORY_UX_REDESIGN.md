@@ -107,25 +107,22 @@ and *synchronous, foreground, LLM-driven* writes. MeshClaw uses *push* reads
                     NetworkX GraphML + Obsidian vault (UNCHANGED)
 ```
 
-### 3.1 Read path — `UserPromptSubmit` hook (fixes #2)
+### 3.1 Read path — `SessionStart` + `UserPromptSubmit` hooks (fixes #2)
 - **New file:** `plugin/bin/engram-context` (executable, stdlib-preferred; may shell out
   to `engram context` / `engram query`).
-- On each user prompt, emit a `## Memory Context` block to **stdout** — Claude Code
-  prepends hook stdout to the model context. This is the exact MeshClaw injection move.
-- **Payload = "both" strategy (recommended):**
-  1. **Stable digest** — god nodes + recent activity + patterns. Read from a
-     pre-computed cache file `vault/_meta/context-cache.md` (refreshed by the worker) so
-     the hook stays fast. Fall back to calling `engram context` if cache missing.
-  2. **Prompt-matched subgraph** — run `engram query --question "<keywords from prompt>"`,
-     include top matched entities + 1-hop neighbors. Strip stop-words; cap tokens.
-- **Budget:** hard-cap the emitted block (e.g. ≤ 2,000 chars / configurable), mirroring
-  MeshClaw's caps. Truncate with an ellipsis marker.
+- **Stable digest** — inject god nodes + recent activity + patterns once at
+  `SessionStart`, reading `vault/_meta/context-cache.md` and falling back to
+  `engram context` when the cache is absent.
+- **Prompt-matched subgraph** — on `UserPromptSubmit`, read the entity index and emit
+  only matching entities. No match means no injection. The fallback is
+  `engram query --question "<keywords from prompt>"` when the index is unavailable.
+- **Budget:** cap prompt blocks at 1,000 characters and session digests at 1,200
+  characters by default. Truncate with an ellipsis marker.
 - **Latency:** target < 300 ms. If the query step risks exceeding it, gate it behind a
   timeout and fall back to the cached digest only.
-- **Register** in `plugin/hooks/hooks.json` under `UserPromptSubmit` (matcher `""`).
-- **Optional:** also add a `SessionStart` hook that injects the stable digest once.
-- **Keep** the existing `PreToolUse` hook as a *supplementary* signal (or retire it — it
-  is no longer the primary retrieval path). Do not let it be the only reader.
+- **Register** prompt matching under `UserPromptSubmit` and inject the stable digest
+  once under `SessionStart`.
+- **Retire** the existing `PreToolUse` hook in both Claude Code and Codex.
 
 ### 3.2 Capture path — upgraded `Stop` hook (fixes #1)
 - **Edit:** `plugin/bin/engram-hook`.
@@ -133,8 +130,8 @@ and *synchronous, foreground, LLM-driven* writes. MeshClaw uses *push* reads
   `vault/_meta/pending.jsonl`: `{session_id, timestamp, turn_text}` (or
   `{session_id, jsonl_path, turn_range}` if the full transcript is retrievable — prefer
   storing enough text to extract from without re-reading the session file).
-- Still **stdlib only**, still gated by `hook-enabled`, still fail-silent, still skips
-  trivial turns. **No LLM. No permission prompt. O(1).**
+- Still **stdlib only**, fail-silent, and skips trivial turns. Capture and injection
+  have separate flags with legacy `hook-enabled` compatibility. **No LLM.**
 - Keep `timeout` small in `hooks.json` (Stop hook must be sub-100ms).
 
 ### 3.3 Extraction path — background worker (fixes #3)

@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Engram UserPromptSubmit hook — inject memory context on each user prompt.
+"""Inject compact Engram context at session start or prompt submission.
 
-Emits a Memory Context block composed of:
-1. Stable digest from vault/_meta/context-cache.md (or via `engram context`)
-2. Prompt-matched subgraph from `engram query --question "<keywords>"`
+Modes:
+- session: emit the stable cached digest once when a session starts.
+- prompt: emit only prompt-matched entities; no match means no injection.
 
-Budget: hard-cap at 2000 chars (configurable), truncate digest first.
-Kill switch: vault/_meta/hook-enabled must exist.
-Fail-silent: any exception → empty stdout, exit 0.
+The hook is stdlib-only, size-capped, and fail-silent.
 """
 
 import json
@@ -21,12 +19,12 @@ from pathlib import Path
 
 CONFIG_PATH = Path(os.environ.get("ENGRAM_CONFIG", str(Path.home() / ".engram" / "config.json")))
 FALLBACK_VAULT = Path.home() / ".engram" / "vault"
-DEFAULT_MAX_CHARS = 2000
-SUBPROCESS_TIMEOUT = 2.0  # seconds
-MIN_TOKEN_LEN = 3
+DEFAULT_MAX_CHARS = 1000
+DEFAULT_SESSION_MAX_CHARS = 1200
+SUBPROCESS_TIMEOUT = 2.0
 TRUNCATION_MARKER = "…"
+INDEX_VERSIONS = {1, 2}
 
-# Common stop words to exclude from keyword extraction
 STOP_WORDS = {
     "THE", "AND", "FOR", "WITH", "FROM", "THAT", "THIS", "HAVE", "HAS",
     "ARE", "WAS", "WERE", "BEEN", "WILL", "CAN", "COULD", "WOULD", "SHOULD",
@@ -37,289 +35,236 @@ STOP_WORDS = {
 }
 
 
-def _get_vault():
-    """Load vault path from config, falling back to default."""
+def _load_config():
     try:
         with open(CONFIG_PATH) as f:
-            return Path(json.load(f).get("vault", str(FALLBACK_VAULT)))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return FALLBACK_VAULT
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
-def _get_max_chars(vault_dir):
-    """Load context_max_chars from config, or use default."""
-    try:
-        with open(CONFIG_PATH) as f:
-            config = json.load(f)
-            return config.get("context_max_chars", DEFAULT_MAX_CHARS)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return DEFAULT_MAX_CHARS
+def _get_vault(config):
+    return Path(config.get("vault", str(FALLBACK_VAULT)))
 
 
-def _extract_keywords(prompt):
-    """Extract meaningful keywords from prompt (similar to engram-pretool)."""
-    tokens = re.split(r'[^a-zA-Z0-9]+', prompt)
-    tokens = [t.upper() for t in tokens if len(t) >= MIN_TOKEN_LEN]
-    tokens = [t for t in tokens if t not in STOP_WORDS]
-    return list(dict.fromkeys(tokens))  # dedupe, preserve order
+def _feature_enabled(vault_dir, feature):
+    """Support split flags while preserving legacy hook-enabled vaults."""
+    meta = vault_dir / "_meta"
+    capture_flag = meta / "capture-enabled"
+    injection_flag = meta / "injection-enabled"
+    target = capture_flag if feature == "capture" else injection_flag
+    if capture_flag.exists() or injection_flag.exists():
+        return target.exists()
+    return (meta / "hook-enabled").exists()
+
+
+def _configured_limit(config, key, default):
+    value = config.get(key, default)
+    return value if isinstance(value, int) and value >= 0 else default
+
+
+def _cjk_ngrams(text):
+    terms = []
+    for run in re.findall(r"[\u3400-\u9fff]+", text):
+        for width in range(2, min(4, len(run)) + 1):
+            terms.extend(run[i:i + width] for i in range(len(run) - width + 1))
+    return terms
+
+
+def _extract_terms(text):
+    ascii_terms = [
+        token.lower()
+        for token in re.findall(r"[a-zA-Z0-9]+", text)
+        if len(token) >= 3 and token.upper() not in STOP_WORDS
+    ]
+    return list(dict.fromkeys(ascii_terms + _cjk_ngrams(text)))
 
 
 def _read_cache(vault_dir):
-    """Read stable digest from context-cache.md if present."""
-    cache_path = vault_dir / "_meta" / "context-cache.md"
-    if cache_path.exists():
-        try:
-            return cache_path.read_text(encoding="utf-8").strip()
-        except Exception:
-            return ""
-    return ""
+    try:
+        return (vault_dir / "_meta" / "context-cache.md").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _run_engram(args):
+    engram_bin = shutil.which("engram")
+    if not engram_bin:
+        return None
+    try:
+        result = subprocess.run(
+            [engram_bin, *args], capture_output=True, text=True,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        pass
+    return None
 
 
 def _fallback_context(vault_dir):
-    """Shell out to `engram context` as fallback if cache missing."""
-    engram_bin = shutil.which("engram")
-    if not engram_bin:
-        return ""
-
-    try:
-        result = subprocess.run(
-            [engram_bin, "context", "--vault", str(vault_dir)],
-            capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT,
-        )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            return data.get("context", "").strip()
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
-        pass
-    return ""
+    data = _run_engram(["context", "--vault", str(vault_dir)])
+    return data.get("context", "").strip() if isinstance(data, dict) else ""
 
 
 def _load_entity_index(vault_dir):
-    """Load entity-index.json if present and well-formed, else return None.
-
-    Returns {entity_name: {"keywords": set, "snippet": str}} with malformed
-    entries skipped, or None (missing/corrupt/wrong-shape file → the caller
-    falls back to the subprocess path instead of aborting the injection).
-    """
-    index_path = vault_dir / "_meta" / "entity-index.json"
-    if not index_path.exists():
-        return None
     try:
-        with open(index_path, encoding="utf-8") as f:
+        with open(vault_dir / "_meta" / "entity-index.json", encoding="utf-8") as f:
             data = json.load(f)
-        if not isinstance(data, dict) or data.get("version") != 1:
+        if not isinstance(data, dict) or data.get("version") not in INDEX_VERSIONS:
             return None
         entities = data.get("entities")
         if not isinstance(entities, dict):
             return None
-        # Normalize: skip malformed entries; keywords as a set for O(1) matching
+
         index = {}
         for name, entry in entities.items():
             if not isinstance(entry, dict):
                 continue
             keywords = entry.get("keywords")
             snippet = entry.get("snippet")
+            local_path = entry.get("local_path", "")
             if not isinstance(keywords, list) or not isinstance(snippet, str):
                 continue
             index[name] = {
-                "keywords": {kw for kw in keywords if isinstance(kw, str)},
+                "keywords": {kw.lower() for kw in keywords if isinstance(kw, str)},
                 "snippet": snippet,
+                "local_path": local_path if isinstance(local_path, str) else "",
             }
         return index
-    except (ValueError, OSError):
-        # ValueError covers JSONDecodeError and UnicodeDecodeError (non-UTF8
-        # bytes); OSError covers IOError. Corrupt file → fall back.
+    except (OSError, ValueError):
         return None
 
 
-def _match_entities_from_index(index, prompt_tokens):
-    """Match entities from index based on prompt tokens.
+def _path_affinity(cwd, local_path):
+    if not cwd or not local_path:
+        return 0
+    try:
+        cwd = os.path.realpath(cwd)
+        local_path = os.path.realpath(local_path)
+        if cwd == local_path or cwd.startswith(local_path + os.sep):
+            return 2
+        if local_path.startswith(cwd + os.sep):
+            return 1
+    except (OSError, ValueError):
+        pass
+    return 0
 
-    Index entries are pre-normalized by _load_entity_index (keywords: set,
-    snippet: str). Returns list of (entity_name, match_count, snippet) tuples,
-    ranked by match_count desc.
-    """
-    if not prompt_tokens:
+
+def _match_entities_from_index(index, terms, cwd=""):
+    if not terms:
         return []
-
+    term_set = set(terms)
     scored = []
-    for entity_name, entity_data in index.items():
-        keywords = entity_data["keywords"]
-        # Count how many prompt tokens match this entity's keywords
-        match_count = sum(1 for token in prompt_tokens if token.lower() in keywords)
-        if match_count > 0:
-            scored.append((entity_name, match_count, entity_data["snippet"]))
-
-    # Sort by match count (descending), take top 5
-    scored.sort(key=lambda x: -x[1])
+    for name, entry in index.items():
+        matches = len(term_set & entry["keywords"])
+        if not matches:
+            continue
+        affinity = _path_affinity(cwd, entry["local_path"])
+        score = matches * 10 + affinity * 3
+        scored.append((score, matches, name, entry["snippet"]))
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
     return scored[:5]
 
 
-def _query_subgraph(vault_dir, keywords):
-    """Query for prompt-matched entities.
-
-    Fast path: reads entity-index.json (no subprocess).
-    Fallback: shells out to `engram query` if index missing.
-    """
-    if not keywords:
+def _format_query_result(data):
+    if not isinstance(data, dict):
         return ""
+    parts = []
+    matched = data.get("matched_entities", [])
+    if matched:
+        parts.append(f"**Matched:** {', '.join(matched[:5])}")
+    expanded = data.get("expanded_entities", [])
+    if expanded:
+        parts.append(f"**Related:** {', '.join(e['name'] for e in expanded[:5] if 'name' in e)}")
+    context = data.get("context", "").strip()
+    if context:
+        compact = []
+        for line in context.splitlines()[:15]:
+            line = line.strip()
+            if line.startswith("##") or (line and not line.startswith("#")):
+                compact.append(line)
+        if compact:
+            parts.append("\n".join(compact))
+    return "\n".join(parts)
 
-    # Fast path: try entity-index.json. Any unexpected failure falls through
-    # to the subprocess fallback instead of aborting the whole injection.
-    try:
-        index = _load_entity_index(vault_dir)
-        if index is not None:
-            matches = _match_entities_from_index(index, keywords)
-            if matches:
-                snippets = [snippet for _, _, snippet in matches]
-                return "\n".join(snippets)
-            return ""
-    except Exception:
-        pass
 
-    # Fallback: subprocess query (for vaults whose worker hasn't run since upgrade)
-    engram_bin = shutil.which("engram")
-    if not engram_bin:
+def _query_subgraph(vault_dir, terms, cwd=""):
+    if not terms:
         return ""
+    index = _load_entity_index(vault_dir)
+    if index is not None:
+        matches = _match_entities_from_index(index, terms, cwd)
+        return "\n".join(item[3] for item in matches)
 
-    question = " ".join(keywords[:10])  # limit to first 10 keywords
-
-    try:
-        result = subprocess.run(
-            [engram_bin, "query", "--question", question, "--vault", str(vault_dir)],
-            capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT,
-        )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            parts = []
-
-            # Format matched entities
-            matched = data.get("matched_entities", [])
-            if matched:
-                parts.append(f"**Matched:** {', '.join(matched[:5])}")
-
-            # Format expanded entities (1-hop neighbors)
-            expanded = data.get("expanded_entities", [])
-            if expanded:
-                exp_names = [e["name"] for e in expanded[:5]]
-                parts.append(f"**Related:** {', '.join(exp_names)}")
-
-            # Include context details (compact)
-            context = data.get("context", "").strip()
-            if context:
-                # Take first few lines, compact format
-                lines = context.split("\n")
-                compact = []
-                for line in lines[:15]:
-                    line = line.strip()
-                    if line.startswith("##"):
-                        compact.append(line)
-                    elif line and not line.startswith("#"):
-                        compact.append(line)
-                if compact:
-                    parts.append("\n".join(compact))
-
-            return "\n".join(parts) if parts else ""
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception):
-        pass
-    return ""
+    data = _run_engram([
+        "query", "--question", " ".join(terms[:12]),
+        "--vault", str(vault_dir),
+    ])
+    return _format_query_result(data)
 
 
-def _build_memory_context(vault_dir, prompt):
-    """Build full memory context block: digest + query results."""
-    # 1. Stable digest (cache or fallback)
-    digest = _read_cache(vault_dir)
-    used_fallback = False
-    if not digest:
-        digest = _fallback_context(vault_dir)
-        used_fallback = True
-
-    # 2. Junk-prompt gate: if the prompt has no meaningful tokens (length ≥ 4
-    # after stop-word filtering), skip entity matching entirely.
-    keywords = _extract_keywords(prompt)
-    has_meaningful_tokens = any(len(kw) >= 4 for kw in keywords)
-
-    # 3. Prompt-matched subgraph — skipped when:
-    #    - the fallback subprocess ran (would exceed hook timeout budget), or
-    #    - junk prompt with no meaningful tokens
-    # The fallback digest is freshly built from the full graph, so on a cache
-    # miss we settle for the digest alone and stay inside the hook budget.
-    query_result = ""
-    if not used_fallback and has_meaningful_tokens:
-        query_result = _query_subgraph(vault_dir, keywords)
-
-    # If nothing to emit, return empty
-    if not digest and not query_result:
+def _cap_block(header, content, max_chars):
+    if not content or max_chars <= len(header):
         return ""
-
-    # 3. Apply budget: truncate digest first to preserve query results
-    max_chars = _get_max_chars(vault_dir)
-    header = "## Memory Context\n\n"
-    header_len = len(header)
-    available = max_chars - header_len
-
-    if available <= 0:
-        return ""
-
-    query_len = len(query_result)
-    digest_len = len(digest)
-    total_content = query_len + digest_len + (3 if digest and query_result else 0)  # +3 for "\n\n" separator
-
-    if total_content <= available:
-        # Everything fits
-        if digest and query_result:
-            content = f"{digest}\n\n{query_result}"
-        else:
-            content = digest or query_result
-    else:
-        # Need to truncate
-        if query_result:
-            # Preserve query results, truncate digest
-            query_with_sep = query_result
-            remaining_for_digest = available - len(query_with_sep) - 3 - len(TRUNCATION_MARKER)
-            if remaining_for_digest > 50 and digest:
-                # Include truncated digest
-                truncated_digest = digest[:remaining_for_digest] + TRUNCATION_MARKER
-                content = f"{truncated_digest}\n\n{query_with_sep}"
-            else:
-                # Only query results fit
-                if len(query_with_sep) > available - len(TRUNCATION_MARKER):
-                    content = query_with_sep[:available - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
-                else:
-                    content = query_with_sep
-        else:
-            # Only digest, truncate it
-            content = digest[:available - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
-
+    available = max_chars - len(header)
+    if len(content) > available:
+        content = content[:max(0, available - len(TRUNCATION_MARKER))] + TRUNCATION_MARKER
     return header + content
+
+
+def _build_session_context(vault_dir, config):
+    digest = _read_cache(vault_dir) or _fallback_context(vault_dir)
+    return _cap_block(
+        "## Engram Session Memory\n\n",
+        digest,
+        _configured_limit(config, "context_session_max_chars", DEFAULT_SESSION_MAX_CHARS),
+    )
+
+
+def _build_prompt_context(vault_dir, config, prompt, cwd=""):
+    matched = _query_subgraph(vault_dir, _extract_terms(prompt), cwd)
+    return _cap_block(
+        "## Memory Context\n\n",
+        matched,
+        _configured_limit(config, "context_max_chars", DEFAULT_MAX_CHARS),
+    )
 
 
 def main():
     try:
-        vault_dir = _get_vault()
-        enabled_flag = vault_dir / "_meta" / "hook-enabled"
-
-        # Kill switch check
-        if not enabled_flag.exists():
+        mode = sys.argv[1].lower() if len(sys.argv) > 1 else "prompt"
+        if mode not in ("prompt", "session"):
             return
 
-        # Read payload from stdin
+        config = _load_config()
+        vault_dir = _get_vault(config)
+        if not _feature_enabled(vault_dir, "injection"):
+            return
+
         try:
             payload = json.load(sys.stdin)
-        except (json.JSONDecodeError, ValueError):
+        except (ValueError, OSError):
+            return
+        if not isinstance(payload, dict):
             return
 
-        prompt = payload.get("prompt", "")
-        if not prompt:
-            return
-
-        # Build and emit memory context
-        memory_context = _build_memory_context(vault_dir, prompt)
+        if mode == "session":
+            memory_context = _build_session_context(vault_dir, config)
+        else:
+            prompt = payload.get("prompt", "")
+            if not isinstance(prompt, str) or not prompt:
+                return
+            cwd = payload.get("cwd", "")
+            memory_context = _build_prompt_context(
+                vault_dir, config, prompt,
+                cwd if isinstance(cwd, str) else "",
+            )
         if memory_context:
             print(memory_context)
-
     except Exception:
-        # Fail silent: any exception → empty stdout, exit 0
         pass
 
 

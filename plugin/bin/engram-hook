@@ -11,6 +11,7 @@ write transcripts in different formats, both handled by _normalize_entry.
 """
 
 import json
+import fcntl
 import os
 import shutil
 import subprocess
@@ -34,13 +35,28 @@ def _cap_turn_text(text):
     return text
 
 
-def _get_vault():
-    """Load vault path from config, falling back to default."""
+def _load_config():
     try:
         with open(CONFIG_PATH) as f:
-            return Path(json.load(f).get("vault", str(FALLBACK_VAULT)))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return FALLBACK_VAULT
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _get_vault(config):
+    return Path(config.get("vault", str(FALLBACK_VAULT)))
+
+
+def _feature_enabled(vault_dir, feature):
+    """Support split flags while preserving legacy hook-enabled vaults."""
+    meta = vault_dir / "_meta"
+    capture_flag = meta / "capture-enabled"
+    injection_flag = meta / "injection-enabled"
+    target = capture_flag if feature == "capture" else injection_flag
+    if capture_flag.exists() or injection_flag.exists():
+        return target.exists()
+    return (meta / "hook-enabled").exists()
 
 
 def _entry_text(entry):
@@ -167,30 +183,77 @@ def _extract_full_turn(transcript_path):
         return None
 
 
-def _has_unprocessed_content(vault_dir):
-    """Check if pending.jsonl has unprocessed content.
-
-    Returns True if worker-state offset < pending.jsonl size.
-    """
+def _pending_batch_ready(vault_dir, config):
+    """Return whether spawning a worker can pass the worker batching gate."""
+    lock_file = None
     try:
+        lock_file = open(vault_dir / "_meta" / "pending.lock", "a+")
+        fcntl.flock(lock_file, fcntl.LOCK_SH)
         pending_file = vault_dir / "_meta" / "pending.jsonl"
         if not pending_file.exists():
             return False
 
         state_file = vault_dir / "_meta" / "worker-state.json"
-        if not state_file.exists():
-            # No state file means nothing processed yet
-            return True
-
-        with open(state_file) as f:
-            state = json.load(f)
-
-        offset = state.get("offset", 0)
+        offset = 0
+        if state_file.exists():
+            with open(state_file) as f:
+                state = json.load(f)
+            offset = state.get("offset", 0)
         file_size = pending_file.stat().st_size
+        if not isinstance(offset, int) or offset < 0 or offset > file_size:
+            offset = 0
+        if offset >= file_size:
+            return False
 
-        return offset < file_size
+        records = []
+        with open(pending_file, "rb") as f:
+            f.seek(offset)
+            for raw_line in f:
+                try:
+                    record = json.loads(raw_line)
+                    if isinstance(record, dict) and record.get("turn_text"):
+                        records.append(record)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+
+        min_turns = config.get("worker_min_batch_turns", 1)
+        if not isinstance(min_turns, int) or min_turns < 1:
+            min_turns = 1
+        max_turns = config.get("worker_max_turns_per_run", 20)
+        if isinstance(max_turns, int) and max_turns >= 1:
+            min_turns = min(min_turns, max_turns)
+        if len(records) >= min_turns:
+            return True
+        if not records:
+            return False
+
+        max_age = config.get("worker_max_batch_age_hours", 24)
+        if not isinstance(max_age, (int, float)) or max_age < 0:
+            max_age = 24
+        try:
+            oldest = datetime.fromisoformat(records[0]["timestamp"])
+            age_hours = (datetime.now() - oldest).total_seconds() / 3600
+        except (KeyError, TypeError, ValueError):
+            return True
+        return age_hours >= max_age
     except Exception:
         return False
+    finally:
+        if lock_file is not None:
+            lock_file.close()
+
+
+def _append_pending(vault_dir, record):
+    """Append one record under the lock shared with worker compaction."""
+    meta_dir = vault_dir / "_meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = open(meta_dir / "pending.lock", "a+")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        with open(meta_dir / "pending.jsonl", "a") as f:
+            f.write(json.dumps(record) + "\n")
+    finally:
+        lock_file.close()
 
 
 def _spawn_worker(vault_dir):
@@ -223,11 +286,9 @@ def main():
         event_type = sys.argv[1] if len(sys.argv) > 1 else ""
         event_type_lower = event_type.lower()
 
-        vault_dir = _get_vault()
-        enabled_flag = vault_dir / "_meta" / "hook-enabled"
-
-        # Check kill switch
-        if not enabled_flag.exists():
+        config = _load_config()
+        vault_dir = _get_vault(config)
+        if not _feature_enabled(vault_dir, "capture"):
             return
 
         if event_type_lower == "stop":
@@ -262,14 +323,11 @@ def main():
             }
 
             # Append to pending.jsonl
-            pending_file = vault_dir / "_meta" / "pending.jsonl"
-            pending_file.parent.mkdir(parents=True, exist_ok=True)
+            _append_pending(vault_dir, record)
 
-            with open(pending_file, "a") as f:
-                f.write(json.dumps(record) + "\n")
-
-            # Spawn worker after successful append
-            _spawn_worker(vault_dir)
+            # Avoid launching a process that would immediately defer.
+            if _pending_batch_ready(vault_dir, config):
+                _spawn_worker(vault_dir)
 
         elif event_type_lower == "sessionend":
             # Consume the hook payload so the writer never blocks on a full
@@ -280,7 +338,7 @@ def main():
                 pass
 
             # SessionEnd: spawn worker if there's unprocessed content
-            if _has_unprocessed_content(vault_dir):
+            if _pending_batch_ready(vault_dir, config):
                 _spawn_worker(vault_dir)
 
     except Exception:

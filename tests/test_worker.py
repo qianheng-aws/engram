@@ -431,12 +431,13 @@ def test_worker_refreshes_entity_index():
         # Index should contain the worker entity
         with open(index_path) as f:
             index_data = json.load(f)
-        assert index_data["version"] == 1
+        assert index_data["version"] == 2
         assert "WORKER_ENTITY_A" in index_data["entities"]
 
         entity = index_data["entities"]["WORKER_ENTITY_A"]
         assert "keywords" in entity
         assert "snippet" in entity
+        assert "local_path" in entity
         assert len(entity["snippet"]) <= 300
         print("  ✅ worker: refreshes _meta/entity-index.json after landing")
 
@@ -457,6 +458,47 @@ def test_worker_skips_malformed_pending_lines():
         # Offset advanced past the garbage line too
         assert _read_state(vault)["offset"] == os.path.getsize(pending)
         print("  ✅ worker: malformed pending lines skipped, valid ones processed")
+
+
+def test_worker_compacts_consumed_prefix_and_preserves_tail():
+    """Compaction rewrites only the unconsumed tail and resets the offset."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake = _write_fake_claude(tmpdir)
+        config = _write_config(
+            tmpdir, vault, fake, worker_max_turns_per_run=2,
+            worker_compact_after_bytes=1, worker_gleaning=0)
+        pending = _seed_pending(vault, n=3)
+
+        first = _run_worker(vault, config, check=True)
+        assert json.loads(first.stdout)["processed"] == 2
+        assert _read_state(vault)["offset"] == 0
+        with open(pending) as f:
+            remaining = [json.loads(line) for line in f]
+        assert len(remaining) == 1
+        assert remaining[0]["session_id"] == "sess-2"
+
+        second = _run_worker(vault, config, check=True)
+        assert json.loads(second.stdout)["processed"] == 1
+        assert os.path.getsize(pending) == 0
+        assert _read_state(vault)["offset"] == 0
+
+
+def test_worker_compacts_fully_consumed_queue_on_noop():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake = _write_fake_claude(tmpdir)
+        config = _write_config(
+            tmpdir, vault, fake, worker_compact_after_bytes=1, worker_gleaning=0)
+        pending = _seed_pending(vault, n=1)
+        size = os.path.getsize(pending)
+        with open(os.path.join(vault, "_meta", "worker-state.json"), "w") as f:
+            json.dump({"offset": size, "replays_since_consolidation": 0}, f)
+
+        result = _run_worker(vault, config, check=True)
+        assert json.loads(result.stdout)["processed"] == 0
+        assert os.path.getsize(pending) == 0
+        assert _read_state(vault)["offset"] == 0
 
 
 # ── prompt via stdin (no giant argv) ──────────────────────
@@ -851,6 +893,8 @@ if __name__ == "__main__":
     test_worker_refreshes_context_cache()
     test_worker_refreshes_entity_index()
     test_worker_skips_malformed_pending_lines()
+    test_worker_compacts_consumed_prefix_and_preserves_tail()
+    test_worker_compacts_fully_consumed_queue_on_noop()
     test_worker_passes_prompt_via_stdin_not_argv()
     test_worker_giant_backlog_does_not_hit_argv_limit()
     test_worker_batch_cap_bounds_each_run()

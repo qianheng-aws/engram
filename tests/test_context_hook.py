@@ -1,4 +1,4 @@
-"""Tests for Task 4: UserPromptSubmit hook (engram-context)."""
+"""Tests for SessionStart and UserPromptSubmit context injection."""
 
 import json
 import os
@@ -7,674 +7,178 @@ import sys
 import tempfile
 
 
-def _make_vault(tmpdir):
+HOOK = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                    "plugin", "bin", "engram-context")
+
+
+def _make_vault(tmpdir, flag="injection-enabled"):
     vault = os.path.join(tmpdir, "vault")
-    os.makedirs(os.path.join(vault, "_meta"), exist_ok=True)
+    meta = os.path.join(vault, "_meta")
+    os.makedirs(meta)
+    if flag:
+        open(os.path.join(meta, flag), "w").close()
     return vault
 
 
-def test_context_hook_no_hook_enabled_flag():
-    """Hook respects kill switch: no hook-enabled flag → empty stdout, exit 0."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
+def _config(tmpdir, vault, **extra):
+    path = os.path.join(tmpdir, "config.json")
+    data = {"vault": vault, **extra}
+    with open(path, "w") as f:
+        json.dump(data, f)
+    return path
 
+
+def _run(mode, config, payload, path="/usr/bin:/bin"):
+    return subprocess.run(
+        [sys.executable, HOOK, mode], input=json.dumps(payload),
+        capture_output=True, text=True,
+        env={**os.environ, "ENGRAM_CONFIG": config, "PATH": path},
+    )
+
+
+def _write_index(vault, entities, version=2):
+    path = os.path.join(vault, "_meta", "entity-index.json")
+    with open(path, "w") as f:
+        json.dump({"version": version, "entities": entities}, f)
+
+
+def test_injection_flags_and_legacy_compatibility():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for flag, expected in ((None, False), ("capture-enabled", False),
+                               ("injection-enabled", True), ("hook-enabled", True)):
+            case = os.path.join(tmpdir, flag or "off")
+            os.makedirs(case)
+            vault = _make_vault(case, flag)
+            with open(os.path.join(vault, "_meta", "context-cache.md"), "w") as f:
+                f.write("stable digest")
+            result = _run("session", _config(case, vault), {})
+            assert ("stable digest" in result.stdout) is expected, (flag, result.stdout)
+
+
+def test_session_injects_stable_digest_only():
     with tempfile.TemporaryDirectory() as tmpdir:
         vault = _make_vault(tmpdir)
-        # Do NOT create hook-enabled flag
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        payload = json.dumps({"prompt": "Tell me about testing"})
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "ENGRAM_CONFIG": config_path},
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert result.stdout == "", f"Expected empty stdout, got: {result.stdout}"
-        print("  ✅ context hook respects kill switch")
-
-
-def test_context_hook_empty_vault():
-    """Empty vault (no cache, no engram on PATH) → empty stdout, exit 0."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        payload = json.dumps({"prompt": "Tell me about testing"})
-
-        # Use a clean PATH without engram binary
-        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": "/usr/bin:/bin"}
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert result.stdout == "", f"Expected empty stdout, got: {result.stdout}"
-        print("  ✅ context hook handles empty vault gracefully")
-
-
-def test_context_hook_malformed_stdin():
-    """Hook is fail-silent: malformed stdin → empty stdout, exit 0."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        payload = "{ this is not valid json }"
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "ENGRAM_CONFIG": config_path},
-        )
-        assert result.returncode == 0, "Hook should exit 0 even on malformed stdin"
-        assert result.stdout == "", "Hook should print nothing on error"
-        print("  ✅ context hook fail-silent on malformed stdin")
-
-
-def test_context_hook_cache_file_only():
-    """Hook reads cache file directly (fast path) and emits Memory Context block."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        # Write a fake cache file
-        cache_content = "**Top Entities:** TEST_ENTITY (concept)\n\n**Recent Activity:** 2 new entities added."
-        cache_path = os.path.join(vault, "_meta", "context-cache.md")
-        with open(cache_path, "w") as f:
-            f.write(cache_content)
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        payload = json.dumps({"prompt": "Tell me about testing"})
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "ENGRAM_CONFIG": config_path},
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert "## Memory Context" in result.stdout, "Expected Memory Context header"
-        assert "TEST_ENTITY" in result.stdout, "Expected cache content"
-        print("  ✅ context hook reads cache file (fast path)")
-
-
-def test_context_hook_over_budget_truncation():
-    """Hook truncates output with … marker when over budget."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        # Write a large cache file (over default 2000 char budget)
-        cache_content = "X" * 2500
-        cache_path = os.path.join(vault, "_meta", "context-cache.md")
-        with open(cache_path, "w") as f:
-            f.write(cache_content)
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault, "context_max_chars": 500}, f)
-
-        payload = json.dumps({"prompt": "Tell me about testing"})
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "ENGRAM_CONFIG": config_path},
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert len(result.stdout) <= 550, f"Output too long: {len(result.stdout)} chars"
-        assert "…" in result.stdout, "Expected truncation marker"
-        print("  ✅ context hook truncates over-budget output")
-
-
-def test_context_hook_prompt_matched_subgraph():
-    """Hook extracts keywords and queries for matched entities."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        # Create a fake engram script that returns canned query output
-        fake_engram_dir = os.path.join(tmpdir, "bin")
-        os.makedirs(fake_engram_dir)
-        fake_engram = os.path.join(fake_engram_dir, "engram")
-        with open(fake_engram, "w") as f:
-            f.write(f"""#!/bin/bash
-cat << 'ENDJSON'
-{{
-  "question": "testing deployment",
-  "matched_entities": ["DEPLOYMENT_PIPELINE", "TEST_FRAMEWORK"],
-  "expanded_entities": [
-    {{"name": "CI_CD", "hops": 1, "max_weight": 0.8}}
-  ],
-  "context": "## DEPLOYMENT_PIPELINE\\nAutomated deployment system\\n### Relations\\n  - [[CI_CD]]: Continuous integration (w:0.8)",
-  "community_context": [],
-  "message": "Use context + community_context to answer."
-}}
-ENDJSON
-""")
-        os.chmod(fake_engram, 0o755)
-
-        payload = json.dumps({"prompt": "Tell me about testing and deployment"})
-
-        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": f"{fake_engram_dir}:{os.environ.get('PATH', '')}"}
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert "## Memory Context" in result.stdout, "Expected Memory Context header"
-        assert "DEPLOYMENT_PIPELINE" in result.stdout, "Expected matched entity"
-        assert "CI_CD" in result.stdout, "Expected expanded entity"
-        print("  ✅ context hook queries for prompt-matched entities")
-
-
-def test_context_hook_budget_preserves_query_results():
-    """When over budget, hook truncates digest first to preserve query results."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        # Write a large cache file
-        cache_content = "DIGEST_CONTENT " * 300  # ~4500 chars
-        cache_path = os.path.join(vault, "_meta", "context-cache.md")
-        with open(cache_path, "w") as f:
-            f.write(cache_content)
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault, "context_max_chars": 1000}, f)
-
-        # Create fake engram that returns query results
-        fake_engram_dir = os.path.join(tmpdir, "bin")
-        os.makedirs(fake_engram_dir)
-        fake_engram = os.path.join(fake_engram_dir, "engram")
-        with open(fake_engram, "w") as f:
-            f.write(f"""#!/bin/bash
-cat << 'ENDJSON'
-{{
-  "question": "important keyword",
-  "matched_entities": ["IMPORTANT_ENTITY"],
-  "expanded_entities": [],
-  "context": "## IMPORTANT_ENTITY\\nThis is the most relevant content for the prompt",
-  "community_context": [],
-  "message": "Use context + community_context to answer."
-}}
-ENDJSON
-""")
-        os.chmod(fake_engram, 0o755)
-
-        payload = json.dumps({"prompt": "Tell me about important keyword"})
-
-        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": f"{fake_engram_dir}:{os.environ.get('PATH', '')}"}
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        # Query result (IMPORTANT_ENTITY) should be preserved
-        assert "IMPORTANT_ENTITY" in result.stdout, "Query results should be preserved"
-        # Digest should be truncated
-        assert result.stdout.count("DIGEST_CONTENT") < cache_content.count("DIGEST_CONTENT"), \
-            "Digest should be truncated"
-        print("  ✅ context hook preserves query results when truncating")
-
-
-def _write_logging_fake_engram(tmpdir, calls_log, sleep_secs=0.0):
-    """Fake engram that logs each invocation's subcommand and returns canned JSON."""
-    fake_dir = os.path.join(tmpdir, "bin")
-    os.makedirs(fake_dir, exist_ok=True)
-    fake = os.path.join(fake_dir, "engram")
-    with open(fake, "w") as f:
-        f.write(f"""#!/usr/bin/env python3
-import json, sys, time
-with open({calls_log!r}, "a") as log:
-    log.write(sys.argv[1] + "\\n")
-time.sleep({sleep_secs})
-if sys.argv[1] == "context":
-    print(json.dumps({{"context": "Digest built by fallback engram context call."}}))
-else:
-    print(json.dumps({{"matched_entities": ["QUERY_ENTITY"], "expanded_entities": [],
-                       "context": "## QUERY_ENTITY\\nDetails"}}))
-""")
-    os.chmod(fake, 0o755)
-    return fake_dir
-
-
-def test_context_hook_cache_miss_skips_query_step():
-    """On cache miss the hook must fit the 3s hook budget: after spending up
-    to 2s on the `engram context` fallback, it must NOT also run the 2s
-    `engram query` step (2s + 2s > 3s would get the hook killed)."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-        # NO context-cache.md → fallback path
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        calls_log = os.path.join(tmpdir, "calls.log")
-        fake_dir = _write_logging_fake_engram(tmpdir, calls_log)
-
-        payload = json.dumps({"prompt": "Tell me about deployment testing"})
-        env = {**os.environ, "ENGRAM_CONFIG": config_path,
-               "PATH": f"{fake_dir}:{os.environ.get('PATH', '')}"}
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True, env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert "Digest built by fallback" in result.stdout
-
-        with open(calls_log) as f:
-            calls = f.read().split()
-        assert calls == ["context"], \
-            f"expected only the context fallback call on cache miss, got {calls}"
-        print("  ✅ context hook skips query step on cache-miss fallback path")
-
-
-def test_context_hook_cache_hit_still_queries():
-    """With a warm cache the query step still runs (cache read costs ~0)."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
         with open(os.path.join(vault, "_meta", "context-cache.md"), "w") as f:
-            f.write("**Top Entities:** CACHED_ENTITY (concept)")
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        calls_log = os.path.join(tmpdir, "calls.log")
-        fake_dir = _write_logging_fake_engram(tmpdir, calls_log)
-
-        payload = json.dumps({"prompt": "Tell me about deployment testing"})
-        env = {**os.environ, "ENGRAM_CONFIG": config_path,
-               "PATH": f"{fake_dir}:{os.environ.get('PATH', '')}"}
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True, env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert "CACHED_ENTITY" in result.stdout
-        assert "QUERY_ENTITY" in result.stdout
-
-        with open(calls_log) as f:
-            calls = f.read().split()
-        assert calls == ["query"], f"expected only the query call on cache hit, got {calls}"
-        print("  ✅ context hook runs query step on cache hit")
+            f.write("**Top Entities:** ENGRAM, CODEX")
+        result = _run("session", _config(tmpdir, vault), {"prompt": "ignored"})
+        assert result.returncode == 0
+        assert result.stdout.startswith("## Engram Session Memory")
+        assert "ENGRAM, CODEX" in result.stdout
 
 
-def test_context_hook_entity_index_fast_path():
-    """Hook reads entity-index.json directly (no subprocess) and injects matched snippets."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
+def test_session_default_and_configured_budget():
     with tempfile.TemporaryDirectory() as tmpdir:
         vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        # Write cache
-        cache_path = os.path.join(vault, "_meta", "context-cache.md")
-        with open(cache_path, "w") as f:
-            f.write("**Digest:** General vault overview.")
-
-        # Write entity-index.json
-        index_data = {
-            "version": 1,
-            "entities": {
-                "FLOW_FRAMEWORK": {
-                    "keywords": ["flow", "framework"],
-                    "snippet": "- FLOW_FRAMEWORK (PROJECT): OpenSearch ML workflow engine | related: ML_COMMONS, OPENSEARCH"
-                },
-                "ML_COMMONS": {
-                    "keywords": ["commons", "machine", "learning"],
-                    "snippet": "- ML_COMMONS (PROJECT): Machine learning library for OpenSearch | related: FLOW_FRAMEWORK"
-                }
-            }
-        }
-        index_path = os.path.join(vault, "_meta", "entity-index.json")
-        with open(index_path, "w") as f:
-            json.dump(index_data, f)
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        payload = json.dumps({"prompt": "Tell me about the flow framework"})
-
-        # Use a clean PATH without engram binary (proves no subprocess)
-        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": "/usr/bin:/bin"}
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert "## Memory Context" in result.stdout, "Expected Memory Context header"
-        assert "FLOW_FRAMEWORK" in result.stdout, "Expected matched entity snippet"
-        assert "OpenSearch ML workflow engine" in result.stdout, "Expected entity description"
-        print("  ✅ context hook reads entity-index.json (fast path, no subprocess)")
-
-
-def test_context_hook_entity_index_ranking():
-    """Entities with more matching tokens rank higher."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        cache_path = os.path.join(vault, "_meta", "context-cache.md")
-        with open(cache_path, "w") as f:
-            f.write("**Digest:** Brief.")
-
-        index_data = {
-            "version": 1,
-            "entities": {
-                "OPENSEARCH_PLUGIN": {
-                    "keywords": ["opensearch", "plugin"],
-                    "snippet": "- OPENSEARCH_PLUGIN (CONCEPT): Extension mechanism"
-                },
-                "OPENSEARCH": {
-                    "keywords": ["opensearch"],
-                    "snippet": "- OPENSEARCH (TOOL): Search engine"
-                },
-                "PLUGIN_ARCHITECTURE": {
-                    "keywords": ["plugin", "architecture"],
-                    "snippet": "- PLUGIN_ARCHITECTURE (CONCEPT): Design pattern"
-                }
-            }
-        }
-        index_path = os.path.join(vault, "_meta", "entity-index.json")
-        with open(index_path, "w") as f:
-            json.dump(index_data, f)
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        # Prompt matches "opensearch" and "plugin" → OPENSEARCH_PLUGIN should rank first (2 matches)
-        payload = json.dumps({"prompt": "opensearch plugin development"})
-
-        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": "/usr/bin:/bin"}
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        # OPENSEARCH_PLUGIN should appear before OPENSEARCH (more matches)
-        output = result.stdout
-        pos_plugin = output.find("OPENSEARCH_PLUGIN")
-        pos_base = output.find("OPENSEARCH (TOOL)")
-        assert pos_plugin > 0 and pos_base > 0, "Both entities should be matched"
-        assert pos_plugin < pos_base, "OPENSEARCH_PLUGIN (2 matches) should appear before OPENSEARCH (1 match)"
-        print("  ✅ context hook ranks entities by match count")
-
-
-def test_context_hook_junk_prompt_gate():
-    """Short prompts with no meaningful tokens (after filtering) → digest-only, no matching attempted."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        cache_path = os.path.join(vault, "_meta", "context-cache.md")
-        with open(cache_path, "w") as f:
-            f.write("**Digest:** General content.")
-
-        index_data = {
-            "version": 1,
-            "entities": {
-                "TEST_ENTITY": {
-                    "keywords": ["test", "entity"],
-                    "snippet": "- TEST_ENTITY (CONCEPT): Should not appear"
-                }
-            }
-        }
-        index_path = os.path.join(vault, "_meta", "entity-index.json")
-        with open(index_path, "w") as f:
-            json.dump(index_data, f)
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        # Junk prompt: only short tokens, no tokens ≥ 4 chars after stop-word filtering
-        payload = json.dumps({"prompt": "ok go"})
-
-        # Also create a stub engram that would fail if called (proves no fallback attempted)
-        marker_file = os.path.join(tmpdir, "engram-called")
-        fake_engram_dir = os.path.join(tmpdir, "bin")
-        os.makedirs(fake_engram_dir)
-        fake_engram = os.path.join(fake_engram_dir, "engram")
-        with open(fake_engram, "w") as f:
-            f.write(f"""#!/bin/bash
-touch {marker_file}
-exit 1
-""")
-        os.chmod(fake_engram, 0o755)
-
-        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": f"{fake_engram_dir}:/usr/bin:/bin"}
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        # Digest only, no entity matches
-        assert "General content" in result.stdout, "Digest should be present"
-        assert "TEST_ENTITY" not in result.stdout, "No entity matching for junk prompt"
-        # No subprocess fallback attempted
-        assert not os.path.exists(marker_file), "engram subprocess should not be called for junk prompt"
-        print("  ✅ context hook skips entity matching for junk prompts")
-
-
-def test_context_hook_index_fallback_preserved():
-    """When entity-index.json missing, fallback to engram query subprocess still works."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
-        cache_path = os.path.join(vault, "_meta", "context-cache.md")
-        with open(cache_path, "w") as f:
-            f.write("**Digest:** General.")
-
-        # NO entity-index.json
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        # Create fake engram that returns query result
-        fake_engram_dir = os.path.join(tmpdir, "bin")
-        os.makedirs(fake_engram_dir)
-        fake_engram = os.path.join(fake_engram_dir, "engram")
-        with open(fake_engram, "w") as f:
-            f.write(f"""#!/bin/bash
-cat << 'ENDJSON'
-{{
-  "question": "fallback test",
-  "matched_entities": ["FALLBACK_ENTITY"],
-  "expanded_entities": [],
-  "context": "## FALLBACK_ENTITY\\nFrom subprocess fallback",
-  "community_context": [],
-  "message": "ok"
-}}
-ENDJSON
-""")
-        os.chmod(fake_engram, 0o755)
-
-        payload = json.dumps({"prompt": "Tell me about fallback test"})
-
-        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": f"{fake_engram_dir}:{os.environ.get('PATH', '')}"}
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env=env,
-        )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
-        assert "FALLBACK_ENTITY" in result.stdout, "Should fall back to engram query subprocess"
-        assert "From subprocess fallback" in result.stdout
-        print("  ✅ context hook falls back to subprocess when index missing")
-
-
-def _run_hook_with_index_bytes(index_bytes, prompt="Tell me about the flow framework"):
-    """Helper: run the hook with a raw entity-index.json payload and no engram on PATH.
-
-    Returns the CompletedProcess. Digest cache is always seeded.
-    """
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-context")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        open(os.path.join(vault, "_meta", "hook-enabled"), "w").close()
-
         with open(os.path.join(vault, "_meta", "context-cache.md"), "w") as f:
-            f.write("**Digest:** General vault overview.")
-
-        with open(os.path.join(vault, "_meta", "entity-index.json"), "wb") as f:
-            f.write(index_bytes)
-
-        config_path = os.path.join(tmpdir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        payload = json.dumps({"prompt": prompt})
-        env = {**os.environ, "ENGRAM_CONFIG": config_path, "PATH": "/usr/bin:/bin"}
-
-        return subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env=env,
-        )
+            f.write("X" * 3000)
+        default = _run("session", _config(tmpdir, vault), {})
+        assert len(default.stdout.rstrip("\n")) <= 1200
+        assert "…" in default.stdout
+        configured = _run(
+            "session", _config(tmpdir, vault, context_session_max_chars=300), {})
+        assert len(configured.stdout.rstrip("\n")) <= 300
 
 
-def test_context_hook_index_entities_wrong_shape():
-    """Valid JSON but 'entities' is a list → digest still injected, never empty output."""
-    index_bytes = json.dumps({"version": 1, "entities": ["FLOW_FRAMEWORK"]}).encode()
-    result = _run_hook_with_index_bytes(index_bytes)
-    assert result.returncode == 0, f"stderr: {result.stderr}"
-    assert "## Memory Context" in result.stdout, "Digest must survive shape-corrupt index"
-    assert "General vault overview" in result.stdout
-    print("  ✅ context hook survives entities-as-list corrupt index (digest kept)")
+def test_prompt_without_match_injects_nothing_even_with_digest():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        with open(os.path.join(vault, "_meta", "context-cache.md"), "w") as f:
+            f.write("digest must not repeat on every prompt")
+        _write_index(vault, {
+            "ENGRAM": {"keywords": ["engram"], "snippet": "- ENGRAM: memory"},
+        })
+        result = _run("prompt", _config(tmpdir, vault), {"prompt": "hello there"})
+        assert result.returncode == 0
+        assert result.stdout == ""
 
 
-def test_context_hook_index_entity_value_wrong_shape():
-    """Entity value is a string (not dict) → entry skipped, digest still injected."""
-    index_bytes = json.dumps({
-        "version": 1,
-        "entities": {
-            "FLOW_FRAMEWORK": "not a dict",
-            "ML_COMMONS": {"keywords": ["commons"], "snippet": "- ML_COMMONS (PROJECT): ok"},
-        },
-    }).encode()
-    result = _run_hook_with_index_bytes(index_bytes, prompt="Tell me about ml commons flow")
-    assert result.returncode == 0, f"stderr: {result.stderr}"
-    assert "## Memory Context" in result.stdout, "Digest must survive malformed entry"
-    assert "General vault overview" in result.stdout
-    # Well-formed sibling entry still matches
-    assert "ML_COMMONS" in result.stdout, "Well-formed entries should still match"
-    print("  ✅ context hook skips malformed entity entries, keeps good ones")
-
-
-def test_context_hook_index_non_utf8():
-    """Non-UTF8 bytes in index file → digest still injected, never empty output."""
-    result = _run_hook_with_index_bytes(b'\xff\xfe{"version": 1}')
-    assert result.returncode == 0, f"stderr: {result.stderr}"
-    assert "## Memory Context" in result.stdout, "Digest must survive non-UTF8 index"
-    assert "General vault overview" in result.stdout
-    print("  ✅ context hook survives non-UTF8 index file (digest kept)")
-
-
-def test_context_hook_index_fast_path_latency():
-    """Latency sanity (soft): hook with index present and no engram on PATH
-    completes well under 1s; assert generously (<1.5s) to avoid flaky CI."""
-    import time
-
-    index_bytes = json.dumps({
-        "version": 1,
-        "entities": {
+def test_prompt_fast_path_matches_and_caps_output():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _write_index(vault, {
             "FLOW_FRAMEWORK": {
                 "keywords": ["flow", "framework"],
-                "snippet": "- FLOW_FRAMEWORK (PROJECT): workflow engine",
+                "snippet": "- FLOW_FRAMEWORK: " + "X" * 1500,
+                "local_path": "",
             },
-        },
-    }).encode()
-
-    start = time.monotonic()
-    result = _run_hook_with_index_bytes(index_bytes)
-    elapsed = time.monotonic() - start
-
-    assert result.returncode == 0, f"stderr: {result.stderr}"
-    assert "FLOW_FRAMEWORK" in result.stdout
-    assert elapsed < 1.5, f"Fast path took {elapsed:.2f}s (expected well under 1s)"
-    print(f"  ✅ context hook fast path latency OK ({elapsed*1000:.0f}ms < 1500ms)")
+        })
+        result = _run("prompt", _config(tmpdir, vault),
+                      {"prompt": "explain the flow framework"})
+        assert result.stdout.startswith("## Memory Context")
+        assert "FLOW_FRAMEWORK" in result.stdout
+        assert len(result.stdout.rstrip("\n")) <= 1000
+        assert "…" in result.stdout
 
 
-if __name__ == "__main__":
-    print("Testing UserPromptSubmit hook (engram-context)...")
-    test_context_hook_no_hook_enabled_flag()
-    test_context_hook_empty_vault()
-    test_context_hook_malformed_stdin()
-    test_context_hook_cache_file_only()
-    test_context_hook_over_budget_truncation()
-    test_context_hook_prompt_matched_subgraph()
-    test_context_hook_budget_preserves_query_results()
-    test_context_hook_cache_miss_skips_query_step()
-    test_context_hook_cache_hit_still_queries()
-    test_context_hook_entity_index_fast_path()
-    test_context_hook_entity_index_ranking()
-    test_context_hook_junk_prompt_gate()
-    test_context_hook_index_fallback_preserved()
-    test_context_hook_index_entities_wrong_shape()
-    test_context_hook_index_entity_value_wrong_shape()
-    test_context_hook_index_non_utf8()
-    test_context_hook_index_fast_path_latency()
-    print("\n🎉 All context hook tests passed!")
+def test_prompt_supports_chinese_ngram_matching():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _write_index(vault, {
+            "MEMORY_INJECTION": {
+                "keywords": ["记忆", "记忆注入", "注入"],
+                "snippet": "- MEMORY_INJECTION: 自动记忆注入",
+            },
+        })
+        result = _run("prompt", _config(tmpdir, vault),
+                      {"prompt": "如何优化记忆注入性能？"})
+        assert "MEMORY_INJECTION" in result.stdout
+
+
+def test_prompt_ranking_boosts_current_project_path():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        project = os.path.join(tmpdir, "repo")
+        os.makedirs(project)
+        _write_index(vault, {
+            "REMOTE_ENGRAM": {
+                "keywords": ["engram"], "snippet": "- REMOTE_ENGRAM",
+                "local_path": "/somewhere/else",
+            },
+            "LOCAL_ENGRAM": {
+                "keywords": ["engram"], "snippet": "- LOCAL_ENGRAM",
+                "local_path": project,
+            },
+        })
+        result = _run("prompt", _config(tmpdir, vault),
+                      {"prompt": "engram", "cwd": project})
+        assert result.stdout.index("LOCAL_ENGRAM") < result.stdout.index("REMOTE_ENGRAM")
+
+
+def test_version_one_index_remains_compatible():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir, "hook-enabled")
+        _write_index(vault, {
+            "LEGACY": {"keywords": ["legacy"], "snippet": "- LEGACY: v1"},
+        }, version=1)
+        result = _run("prompt", _config(tmpdir, vault), {"prompt": "legacy"})
+        assert "LEGACY" in result.stdout
+
+
+def test_missing_or_corrupt_index_falls_back_to_query():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        with open(os.path.join(vault, "_meta", "entity-index.json"), "w") as f:
+            f.write("{broken")
+        fake_dir = os.path.join(tmpdir, "bin")
+        os.makedirs(fake_dir)
+        fake = os.path.join(fake_dir, "engram")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\nprintf '%s\\n' '{\"matched_entities\":[\"FALLBACK\"],\"expanded_entities\":[],\"context\":\"## FALLBACK\\nquery result\"}'\n")
+        os.chmod(fake, 0o755)
+        result = _run("prompt", _config(tmpdir, vault),
+                      {"prompt": "fallback query"}, f"{fake_dir}:/usr/bin:/bin")
+        assert "FALLBACK" in result.stdout
+
+
+def test_malformed_payload_and_unknown_mode_are_silent():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        config = _config(tmpdir, vault)
+        malformed = subprocess.run(
+            [sys.executable, HOOK, "prompt"], input="not-json",
+            capture_output=True, text=True,
+            env={**os.environ, "ENGRAM_CONFIG": config},
+        )
+        unknown = _run("unknown", config, {"prompt": "engram"})
+        assert malformed.returncode == unknown.returncode == 0
+        assert malformed.stdout == unknown.stdout == ""

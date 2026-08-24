@@ -1,6 +1,6 @@
-"""Engram — Persistent knowledge graph for Claude Code sessions."""
+"""Engram — Persistent knowledge graph for Claude Code and Codex sessions."""
 
 from .graph import MemoryGraph
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["MemoryGraph"]

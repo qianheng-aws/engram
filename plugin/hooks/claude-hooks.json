@@ -1,13 +1,13 @@
 {
     "description": "Engram — persistent memory via knowledge graph",
     "hooks": {
-        "PreToolUse": [
+        "SessionStart": [
             {
-                "matcher": "Grep|Glob|Read|Agent",
+                "matcher": "",
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-pretool",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-context session",
                         "timeout": 3000
                     }
                 ]
@@ -43,7 +43,7 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-context",
+                        "command": "${CLAUDE_PLUGIN_ROOT}/bin/engram-context prompt",
                         "timeout": 3000
                     }
                 ]
