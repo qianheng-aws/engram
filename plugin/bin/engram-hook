@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Engram hook — fires on CC session Stop and SessionEnd.
+"""Engram hook — fires on session Stop and SessionEnd.
 
 Appends full turn (user + assistant) to pending.jsonl for background processing.
 Spawns detached worker to process the queue.
 Uses only Python stdlib — no external dependencies.
+
+Works under both Claude Code and Codex CLI: the two harnesses send the same
+hook payload fields (session_id, transcript_path, last_assistant_message) but
+write transcripts in different formats, both handled by _normalize_entry.
 """
 
 import json
@@ -69,6 +73,57 @@ def _entry_text(entry):
     return ""
 
 
+# Codex injects context wrapped in these tags as role=user response items;
+# they are harness scaffolding, not something the user typed.
+CODEX_INJECTED_PREFIXES = ("<environment_context>", "<user_instructions>",
+                           "<permissions", "<turn_context>")
+
+
+def _codex_entry_text(payload):
+    """Extract text from a Codex rollout message payload's content blocks."""
+    parts = []
+    for block in payload.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") not in ("input_text", "output_text"):
+            continue
+        block_text = block.get("text", "")
+        if isinstance(block_text, str) and block_text.strip():
+            parts.append(block_text.strip())
+    return "\n\n".join(parts)
+
+
+def _normalize_entry(entry):
+    """Return (role, text) for a transcript entry, or (None, "") if not a
+    user/assistant message.
+
+    Handles both transcript formats:
+    - Claude Code sessions: {"type": "user"|"assistant", "message": {...}}
+    - Codex rollouts: {"type": "response_item", "payload": {"type": "message",
+      "role": "user"|"assistant", "content": [{"type": "input_text"|
+      "output_text", "text": ...}]}}. Codex `event_msg` entries duplicate the
+      same content and are ignored; injected user items (environment context,
+      user instructions) are dropped so they never masquerade as the prompt.
+    """
+    entry_type = entry.get("type", "")
+    if entry_type in ("user", "assistant"):
+        return entry_type, _entry_text(entry)
+
+    if entry_type == "response_item":
+        payload = entry.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "message":
+            return None, ""
+        role = payload.get("role", "")
+        if role not in ("user", "assistant"):
+            return None, ""
+        text = _codex_entry_text(payload)
+        if role == "user" and text.startswith(CODEX_INJECTED_PREFIXES):
+            return None, ""
+        return role, text
+
+    return None, ""
+
+
 def _extract_full_turn(transcript_path):
     """Extract the last full turn (user prompt + assistant text) from transcript.
 
@@ -95,13 +150,12 @@ def _extract_full_turn(transcript_path):
                 entry = json.loads(line.strip())
             except (json.JSONDecodeError, ValueError):
                 continue
-            entry_type = entry.get("type", "")
-            if entry_type not in ("user", "assistant"):
+            role, text = _normalize_entry(entry)
+            if role is None:
                 continue
-            text = _entry_text(entry)
             if text:
                 turn_parts.insert(0, text)
-            if entry_type == "user" and text:
+            if role == "user" and text:
                 break
 
         if not turn_parts:

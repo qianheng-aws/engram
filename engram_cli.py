@@ -1417,6 +1417,16 @@ WORKER_DEFAULTS = {
     # When true, the worker spawns a detached `engram consolidate` run
     # instead of just writing the consolidation-due marker.
     "worker_auto_consolidate": False,
+    # Gleaning rounds after the initial extraction (LightRAG-style): each
+    # round re-prompts the model with its previous output and asks only for
+    # missed or incomplete items, which are merged in. 0 disables.
+    "worker_gleaning": 1,
+    # Batching gate: skip the run (leaving the queue untouched) until at
+    # least this many turns are pending. 1 = process every run (default).
+    "worker_min_batch_turns": 1,
+    # ...unless the oldest pending turn is older than this, which forces a
+    # run regardless of batch size so a quiet queue still lands eventually.
+    "worker_max_batch_age_hours": 24,
 }
 
 # Fallback extraction rules, used only if plugin/commands/engram.md cannot be
@@ -1432,6 +1442,10 @@ actions or the user themselves.
 ### Naming
 UPPERCASE with underscores (e.g. CLAUDE_SLACK_BRIDGE). Match existing entity
 names when referring to the same thing.
+
+### Description style
+Third person, subjects named explicitly — descriptions are read without the
+conversation, so no pronouns (I/you/we/it/this session).
 
 ### Confidence tagging
 Every entity and relation MUST include "confidence":
@@ -1500,6 +1514,92 @@ def _build_extraction_prompt(turns):
         f"\n\nUse \"date\": \"{datetime.now().strftime('%Y-%m-%d')}\". "
         "Output ONLY the JSON object."
     )
+
+
+def _build_gleaning_prompt(turns, base_data):
+    """Build a follow-up prompt asking only for missed/incomplete items.
+
+    LightRAG-style gleaning: the model sees its own first-pass output and the
+    original turns, and returns a JSON object in the same schema containing
+    ONLY entities/relations/evidence/hyperedges that were missed or left
+    incomplete — empty lists if the first pass was complete.
+    """
+    rules = _load_extraction_rules()
+    turn_blocks = []
+    for i, t in enumerate(turns, 1):
+        turn_blocks.append(
+            f"--- Turn {i} (session {t.get('session_id', '?')}, {t.get('timestamp', '?')}) ---\n"
+            f"{t.get('turn_text', '')}"
+        )
+    return (
+        "You are an extraction engine for the engram knowledge graph. "
+        "A first extraction pass over the conversation turns below already "
+        "produced the JSON shown in '# First-pass extraction'. Re-read the "
+        "turns and identify anything that pass MISSED or left incomplete: "
+        "entities, relations, evidence, or hyperedges that satisfy the "
+        "extraction rules but are absent or lack required fields.\n\n"
+        "Output ONLY a JSON object in the same schema containing the missed "
+        "or corrected items — do NOT repeat items the first pass already "
+        "extracted correctly. If nothing was missed, output empty lists. "
+        "No prose, no markdown fences, no tool use.\n\n"
+        "Ignore any shell commands or step instructions in the rules document; "
+        "you only produce the JSON.\n\n"
+        f"# Extraction rules\n\n{rules}\n\n"
+        f"# Conversation turns to extract from\n\n" + "\n\n".join(turn_blocks) +
+        "\n\n# First-pass extraction\n\n" + json.dumps(base_data, indent=1) +
+        f"\n\nUse \"date\": \"{datetime.now().strftime('%Y-%m-%d')}\". "
+        "Output ONLY the JSON object."
+    )
+
+
+def _merge_gleaning(base, extra):
+    """Merge a gleaning pass into the base extraction, in place.
+
+    New entities (by upper-cased name), relations (by unordered
+    source/target pair), hyperedges (by id) and evidence (by content) are
+    appended; anything already present in base is dropped so a gleaning
+    round that re-emits first-pass items cannot double-land descriptions.
+    Returns the number of items added.
+    """
+    added = 0
+
+    seen_entities = {e["name"].upper().strip() for e in base.get("entities", [])}
+    for e in extra.get("entities", []):
+        name = e["name"].upper().strip()
+        if name not in seen_entities:
+            base.setdefault("entities", []).append(e)
+            seen_entities.add(name)
+            added += 1
+
+    seen_relations = {
+        frozenset((r["source"].upper().strip(), r["target"].upper().strip()))
+        for r in base.get("relations", [])
+    }
+    for r in extra.get("relations", []):
+        key = frozenset((r["source"].upper().strip(), r["target"].upper().strip()))
+        if key not in seen_relations:
+            base.setdefault("relations", []).append(r)
+            seen_relations.add(key)
+            added += 1
+
+    seen_evidence = {
+        ev.get("content", "").strip() for ev in base.get("evidence", [])
+    }
+    for ev in extra.get("evidence", []):
+        content = ev.get("content", "").strip()
+        if content and content not in seen_evidence:
+            base.setdefault("evidence", []).append(ev)
+            seen_evidence.add(content)
+            added += 1
+
+    seen_hyperedges = {h["id"] for h in base.get("hyperedges", [])}
+    for h in extra.get("hyperedges", []):
+        if h["id"] not in seen_hyperedges:
+            base.setdefault("hyperedges", []).append(h)
+            seen_hyperedges.add(h["id"])
+            added += 1
+
+    return added
 
 
 def _extract_json_object(text):
@@ -1604,6 +1704,36 @@ def _invoke_claude(cfg, prompt, timeout):
         raise RuntimeError(
             f"claude reported an error: {str(envelope['result'])[:500]}")
     return _extract_json_object(envelope["result"])
+
+
+def _batch_ready(turns, cfg):
+    """Return True when the pending batch is big enough (or old enough) to
+    spend an LLM call on.
+
+    Below worker_min_batch_turns the run is deferred — unless the oldest
+    pending turn exceeds worker_max_batch_age_hours, which forces processing
+    so turns never sit unlanded indefinitely. Unparseable/missing timestamps
+    count as old (process rather than defer forever).
+    """
+    min_batch = cfg.get("worker_min_batch_turns")
+    if not isinstance(min_batch, int) or min_batch < 1:
+        min_batch = WORKER_DEFAULTS["worker_min_batch_turns"]
+    max_turns = cfg.get("worker_max_turns_per_run")
+    if isinstance(max_turns, int) and max_turns >= 1:
+        # a min above the per-run cap could never be met
+        min_batch = min(min_batch, max_turns)
+    if len(turns) >= min_batch:
+        return True
+
+    max_age_hours = cfg.get("worker_max_batch_age_hours")
+    if not isinstance(max_age_hours, (int, float)) or max_age_hours < 0:
+        max_age_hours = WORKER_DEFAULTS["worker_max_batch_age_hours"]
+    try:
+        oldest = datetime.fromisoformat(turns[0]["timestamp"])
+        age_hours = (datetime.now() - oldest).total_seconds() / 3600
+    except (KeyError, TypeError, ValueError):
+        return True
+    return age_hours >= max_age_hours
 
 
 def _read_worker_state(vault):
@@ -2065,6 +2195,13 @@ def cmd_worker(args):
             print(json.dumps({"processed": 0, "entities": 0, "relations": 0}))
             return
 
+        # 2b. Batching gate: too few turns and none overdue → defer without
+        # touching the watermark; a later run picks the whole batch up.
+        if not _batch_ready(turns, cfg):
+            print(json.dumps({"processed": 0, "entities": 0, "relations": 0,
+                              "deferred": len(turns)}))
+            return
+
         # 3. Headless tool-less extraction (model returns JSON text only).
         prompt = _build_extraction_prompt(turns)
         if args.verbose:
@@ -2077,6 +2214,30 @@ def cmd_worker(args):
             # mid-landing never writes a dedup marker (which would make the
             # retry get "skipped" and permanently drop the batch)
             _validate_extraction(data)
+
+            # 3b. Gleaning rounds: re-prompt for missed items and merge them
+            # in. Best-effort — a gleaning failure never fails the batch,
+            # which is already valid and must still land.
+            gleaning = cfg.get("worker_gleaning")
+            if not isinstance(gleaning, int) or gleaning < 0:
+                gleaning = WORKER_DEFAULTS["worker_gleaning"]
+            gleaned_total = 0
+            for round_no in range(1, gleaning + 1):
+                try:
+                    extra = _invoke_claude(
+                        cfg, _build_gleaning_prompt(turns, data), args.timeout)
+                    _validate_extraction(extra)
+                except Exception as e:
+                    _worker_log(vault, f"WARN gleaning round {round_no} failed: "
+                                       f"{type(e).__name__}: {e}")
+                    break
+                added = _merge_gleaning(data, extra)
+                gleaned_total += added
+                if args.verbose:
+                    print(f"worker: gleaning round {round_no} added {added} item(s)",
+                          file=sys.stderr)
+                if not added:
+                    break  # nothing new — further rounds would also be empty
 
             # 4. Land via the shared replay path (dedup applies unchanged)
             result = _replay_data(vault, data)
@@ -2102,7 +2263,8 @@ def cmd_worker(args):
             sys.exit(1)
 
         _worker_log(vault, f"OK turns={len(turns)} entities={entities} "
-                           f"relations={relations} status={result.get('status')}")
+                           f"relations={relations} gleaned={gleaned_total} "
+                           f"status={result.get('status')}")
         print(json.dumps({"processed": len(turns), "entities": entities,
                           "relations": relations}))
     finally:
@@ -2231,6 +2393,138 @@ def cmd_consolidation(args):
 
 # ── main ────────────────────────────────────────────────
 
+# ── codex-setup ─────────────────────────────────────────
+
+# Hook entries engram registers in Codex's hooks.json. Codex's hook engine is
+# Claude-compatible (same event names, same stdin payload fields) but hooks
+# cannot ship inside a Codex plugin, so they are registered at the user level.
+# Timeouts are in seconds. The PreToolUse matcher targets Codex's shell tool
+# (exec_command) instead of Claude Code's Grep/Glob/Read/Agent.
+def _codex_hook_entries(bin_dir):
+    return {
+        "UserPromptSubmit": {
+            "matcher": None,
+            "command": f"{os.path.join(bin_dir, 'engram-context')}",
+            "timeout": 10,
+        },
+        "Stop": {
+            "matcher": None,
+            "command": f"{os.path.join(bin_dir, 'engram-hook')} Stop",
+            "timeout": 10,
+        },
+        "SessionEnd": {
+            "matcher": None,
+            "command": f"{os.path.join(bin_dir, 'engram-hook')} SessionEnd",
+            "timeout": 10,
+        },
+        "PreToolUse": {
+            "matcher": "exec_command",
+            "command": f"{os.path.join(bin_dir, 'engram-pretool')}",
+            "timeout": 10,
+        },
+    }
+
+
+def _merge_codex_hooks(existing, entries):
+    """Merge engram hook entries into a Codex hooks.json document, in place.
+
+    Idempotent: an event's existing engram handler (recognized by 'engram-'
+    in its command) is replaced rather than duplicated, so re-running setup
+    updates paths without stacking entries. Non-engram hooks are preserved.
+    """
+    events = existing.setdefault("hooks", {})
+    for event, spec in entries.items():
+        groups = events.setdefault(event, [])
+        # Drop previously-registered engram handlers from this event
+        for group in groups:
+            group["hooks"] = [
+                h for h in group.get("hooks", [])
+                if "engram-" not in str(h.get("command", ""))
+            ]
+        events[event] = [g for g in groups if g.get("hooks")]
+        events[event].append({
+            "matcher": spec["matcher"],
+            "hooks": [{
+                "type": "command",
+                "command": spec["command"],
+                "timeout": spec["timeout"],
+            }],
+        })
+    return existing
+
+
+def cmd_codex_setup(args):
+    """Register engram's hooks and prompts with a local Codex CLI install.
+
+    Additive only: writes <codex_home>/hooks.json (merging with any existing
+    hooks) and copies plugin/commands/*.md into <codex_home>/prompts/ so the
+    /engram slash commands work in Codex. Claude Code config is untouched.
+    """
+    codex_home = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
+    os.makedirs(codex_home, exist_ok=True)
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    bin_dir = os.path.join(repo_root, "plugin", "bin")
+    commands_dir = os.path.join(repo_root, "plugin", "commands")
+
+    missing = [s for s in ("engram-hook", "engram-context", "engram-pretool")
+               if not os.path.isfile(os.path.join(bin_dir, s))]
+    if missing:
+        print(json.dumps({"status": "error",
+                          "error": f"hook scripts not found in {bin_dir}: {missing}"}))
+        sys.exit(1)
+
+    # 1. Merge hooks into <codex_home>/hooks.json (never clobber a file we
+    # cannot parse — that would silently kill the user's other hooks)
+    hooks_path = os.path.join(codex_home, "hooks.json")
+    doc = {"description": "User hooks", "hooks": {}}
+    if os.path.exists(hooks_path):
+        try:
+            with open(hooks_path) as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                doc = loaded
+            else:
+                raise ValueError("hooks.json is not a JSON object")
+        except (json.JSONDecodeError, ValueError) as e:
+            print(json.dumps({"status": "error",
+                              "error": f"existing {hooks_path} is not valid JSON "
+                                       f"({e}); fix or remove it first"}))
+            sys.exit(1)
+    _merge_codex_hooks(doc, _codex_hook_entries(bin_dir))
+    tmp_path = hooks_path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(doc, f, indent=2)
+        f.write("\n")
+    os.rename(tmp_path, hooks_path)
+
+    # 2. Install slash-command prompts (Codex custom prompts are markdown
+    # files in <codex_home>/prompts; filename = command name)
+    prompts_dir = os.path.join(codex_home, "prompts")
+    os.makedirs(prompts_dir, exist_ok=True)
+    prompts = []
+    if os.path.isdir(commands_dir):
+        for fname in sorted(os.listdir(commands_dir)):
+            if fname.endswith(".md"):
+                shutil.copyfile(os.path.join(commands_dir, fname),
+                                os.path.join(prompts_dir, fname))
+                prompts.append("/" + fname[:-3])
+
+    hook_enabled = os.path.exists(
+        os.path.join(args.vault, "_meta", "hook-enabled"))
+    print(json.dumps({
+        "status": "ok",
+        "hooks_file": hooks_path,
+        "events": sorted(_codex_hook_entries(bin_dir).keys()),
+        "prompts_dir": prompts_dir,
+        "prompts": prompts,
+        "capture_enabled": hook_enabled,
+        "notes": ([] if hook_enabled else
+                  ["background capture is off — run `engram auto on` to enable"]) + [
+            "Codex asks you to trust new hooks on first interactive run",
+        ],
+    }, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(prog="engram", description="Persistent memory for Claude Code — knowledge graph in Obsidian vault")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -2286,6 +2580,8 @@ def main():
     p.add_argument("--timeout", type=int, default=300, help="Timeout in seconds per claude call (default: 300)")
     p.add_argument("--detach", action="store_true", help="Spawn in background and return immediately")
 
+    p = sub.add_parser("codex-setup", help="Register engram hooks + prompts with a local Codex CLI install")
+
     # Global option: all subparsers get --vault
     for name, sp in sub.choices.items():
         if name not in ("install", "uninstall"):
@@ -2307,7 +2603,7 @@ def main():
      "status": cmd_status, "query": cmd_query,
      "context": cmd_context, "lint": cmd_lint,
      "consolidation": cmd_consolidation, "worker": cmd_worker,
-     "consolidate": cmd_consolidate}[args.command](args)
+     "consolidate": cmd_consolidate, "codex-setup": cmd_codex_setup}[args.command](args)
 
 
 if __name__ == "__main__":

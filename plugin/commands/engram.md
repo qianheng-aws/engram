@@ -37,6 +37,11 @@ Examples:
 ### Description quality
 Use markdown in descriptions. Include code blocks, links, bullet lists where relevant.
 
+Write descriptions in **third person** and name subjects explicitly — descriptions
+are read later without the conversation, so pronouns lose their referent.
+No `I`, `you`, `we`, `he/she`, `this session`, `the user said`; write
+`CLAUDE_SLACK_BRIDGE polls ...`, not `it polls ...`.
+
 - Bad ❌: `"A tool that was discussed"`
 - Bad ❌: `"Bug in the bridge"` (no detail, no fix)
 - Good ✅:
@@ -109,6 +114,44 @@ Notes:
   - `relations`: Which relations this evidence supports (pairs of entity names).
   - Extract 1-3 evidence items per entity. Skip trivial entities that don't need grounding.
 - `hyperedges`: Optional. Group 3+ entities that form a logical unit (e.g., "OODA Pipeline" grouping 5 stages, "Auth Stack" grouping 3 tools). Skip if no natural groupings exist.
+
+### End-to-end example
+
+Conversation:
+> User: The bridge keeps hanging on big outputs. \
+> Assistant: Found it — stderr fills the 64KB pipe buffer because we use
+> `subprocess.PIPE` without a consumer, which blocks stdout. I compared
+> draining stderr in a thread vs an asyncio task and went with the asyncio
+> task since the daemon is already async. Added `_drain_stderr` to daemon.py.
+
+Extraction:
+```json
+{
+  "date": "2026-08-14",
+  "entities": [
+    {"name": "CLAUDE_SLACK_BRIDGE", "entity_type": "PROJECT",
+     "description": "Daemon bridging Claude Code TUI to Slack. Fixed a hang on large outputs: stderr filled the 64KB pipe buffer (`subprocess.PIPE` with no consumer), blocking stdout.\n\n**Fix:** `_drain_stderr` asyncio task in daemon.py — chosen over a thread because the daemon is already async.",
+     "confidence": "EXTRACTED"},
+    {"name": "STDERR_PIPE_DEADLOCK", "entity_type": "CONCEPT",
+     "description": "Deadlock pattern where an unconsumed `subprocess.PIPE` stderr fills the 64KB kernel pipe buffer and blocks the child's stdout. Diagnosed and fixed in CLAUDE_SLACK_BRIDGE.",
+     "confidence": "EXTRACTED"}
+  ],
+  "relations": [
+    {"source": "CLAUDE_SLACK_BRIDGE", "target": "STDERR_PIPE_DEADLOCK",
+     "description": "Bridge hang on large outputs was caused by the stderr pipe deadlock; fixed with an asyncio drain task.",
+     "weight": 0.8, "confidence": "EXTRACTED", "confidence_score": 0.9}
+  ],
+  "evidence": [
+    {"content": "CLAUDE_SLACK_BRIDGE hang root cause: `subprocess.PIPE` stderr with no consumer fills the 64KB pipe buffer and blocks stdout. Fixed by adding a `_drain_stderr` asyncio task in daemon.py, chosen over a thread because the daemon is already async.",
+     "entities": ["CLAUDE_SLACK_BRIDGE", "STDERR_PIPE_DEADLOCK"],
+     "relations": [["CLAUDE_SLACK_BRIDGE", "STDERR_PIPE_DEADLOCK"]]}
+  ],
+  "daily_summary": "Diagnosed and fixed the Claude-Slack bridge hang on large outputs (stderr pipe deadlock, asyncio drain task)."
+}
+```
+Note what is NOT extracted: PYTHON, ASYNCIO, SUBPROCESS — used but not
+decided about. The thread-vs-asyncio comparison stays inside the
+descriptions/evidence rather than becoming its own entity.
 
 **4. Check consolidation signal:**
 

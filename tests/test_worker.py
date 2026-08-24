@@ -69,6 +69,42 @@ def _write_fake_claude(tmpdir, extraction=None, exit_code=0, fenced=True,
     return path
 
 
+def _write_fake_claude_sequence(tmpdir, extractions, fail_from=None):
+    """Fake claude emitting a different canned extraction per invocation.
+
+    A counter file tracks invocation number; past the end of the list the
+    last extraction repeats. With fail_from=N, invocation N (0-based) and
+    later exit non-zero instead — for testing gleaning-failure isolation.
+    """
+    path = os.path.join(tmpdir, "fake-claude-seq")
+    counter = os.path.join(tmpdir, "fake-claude-seq.count")
+    payloads = [
+        json.dumps({"type": "result", "is_error": False,
+                    "result": json.dumps(x)})
+        for x in extractions
+    ]
+    lines = [
+        "#!/usr/bin/env python3",
+        "import sys, os",
+        "sys.stdin.read()",
+        f"counter = {counter!r}",
+        "n = int(open(counter).read()) if os.path.exists(counter) else 0",
+        "open(counter, 'w').write(str(n + 1))",
+        f"payloads = {payloads!r}",
+    ]
+    if fail_from is not None:
+        lines += [
+            f"if n >= {fail_from}:",
+            "    sys.stderr.write('gleaning boom\\n')",
+            "    sys.exit(1)",
+        ]
+    lines += ["sys.stdout.write(payloads[min(n, len(payloads) - 1)])"]
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return path, counter
+
+
 def _write_config(tmpdir, vault, claude_bin, **extra):
     config_path = os.path.join(tmpdir, "config.json")
     cfg = {"vault": vault, "worker_claude_bin": claude_bin}
@@ -616,6 +652,191 @@ def test_consolidation_reset_clears_due_marker():
         print("  ✅ consolidation --reset clears the due marker; status flag false")
 
 
+# ── gleaning rounds ───────────────────────────────────────
+
+GLEANING_EXTRA = {
+    "date": "2026-07-13",
+    "entities": [
+        # duplicate of the first pass — must NOT double-land
+        {"name": "WORKER_ENTITY_A", "entity_type": "CONCEPT",
+         "description": "Duplicate re-emitted by gleaning", "confidence": "EXTRACTED"},
+        # genuinely missed entity — must land
+        {"name": "GLEANED_ENTITY_C", "entity_type": "CONCEPT",
+         "description": "Missed in the first pass", "confidence": "INFERRED"},
+    ],
+    "relations": [
+        # duplicate pair in reversed order — must NOT double-land
+        {"source": "WORKER_ENTITY_B", "target": "WORKER_ENTITY_A",
+         "description": "reversed duplicate", "weight": 0.5, "confidence": "EXTRACTED"},
+        {"source": "WORKER_ENTITY_A", "target": "GLEANED_ENTITY_C",
+         "description": "missed relation", "weight": 0.4, "confidence": "INFERRED"},
+    ],
+    "daily_summary": "gleaning output",
+}
+
+EMPTY_EXTRACTION = {"date": "2026-07-13", "entities": [], "relations": [],
+                    "daily_summary": ""}
+
+
+def test_worker_gleaning_merges_missed_items():
+    """Default one gleaning round: missed entities/relations land, duplicates
+    (including reversed relation pairs) are dropped."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake, counter = _write_fake_claude_sequence(
+            tmpdir, [EXTRACTION, GLEANING_EXTRA])
+        config = _write_config(tmpdir, vault, fake)
+        _seed_pending(vault, n=1)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["entities"] == 3, summary   # A, B + gleaned C
+        assert summary["relations"] == 2, summary  # A-B + A-C (reversed dup dropped)
+        assert int(open(counter).read()) == 2      # initial + 1 gleaning round
+
+        status = _run_cli(["status"], vault, config)
+        assert "GLEANED_ENTITY_C" in status["entities"]
+
+        with open(os.path.join(vault, "_meta", "worker.log")) as f:
+            log = f.read()
+        assert "gleaned=2" in log, log  # entity C + relation A-C
+        print("  ✅ worker: gleaning merges missed items, drops duplicates")
+
+
+def test_worker_gleaning_empty_round_stops_early():
+    """With worker_gleaning=3, an empty gleaning round short-circuits the
+    remaining rounds (no wasted LLM calls)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake, counter = _write_fake_claude_sequence(
+            tmpdir, [EXTRACTION, EMPTY_EXTRACTION])
+        config = _write_config(tmpdir, vault, fake, worker_gleaning=3)
+        _seed_pending(vault, n=1)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["entities"] == 2
+        assert int(open(counter).read()) == 2, \
+            "empty gleaning round must stop the loop, not run all 3 rounds"
+        print("  ✅ worker: empty gleaning round stops remaining rounds")
+
+
+def test_worker_gleaning_failure_does_not_fail_batch():
+    """A gleaning invocation that crashes must not fail the run: the valid
+    first-pass batch still lands and the watermark advances."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake, _ = _write_fake_claude_sequence(tmpdir, [EXTRACTION], fail_from=1)
+        config = _write_config(tmpdir, vault, fake)
+        pending = _seed_pending(vault, n=1)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["processed"] == 1
+        assert summary["entities"] == 2
+        assert _read_state(vault)["offset"] == os.path.getsize(pending)
+
+        with open(os.path.join(vault, "_meta", "worker.log")) as f:
+            log = f.read()
+        assert "WARN gleaning round 1 failed" in log
+        print("  ✅ worker: gleaning failure logged, batch still lands")
+
+
+def test_worker_gleaning_disabled_single_invocation():
+    """worker_gleaning=0 keeps the old single-call behavior."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake, counter = _write_fake_claude_sequence(
+            tmpdir, [EXTRACTION, GLEANING_EXTRA])
+        config = _write_config(tmpdir, vault, fake, worker_gleaning=0)
+        _seed_pending(vault, n=1)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["entities"] == 2
+        assert int(open(counter).read()) == 1, "gleaning=0 must not re-invoke claude"
+        print("  ✅ worker: worker_gleaning=0 disables the extra round")
+
+
+# ── batching gate ─────────────────────────────────────────
+
+def _seed_pending_at(vault, n, timestamp):
+    """Append n turn records with an explicit timestamp."""
+    pending = os.path.join(vault, "_meta", "pending.jsonl")
+    with open(pending, "a") as f:
+        for i in range(n):
+            f.write(json.dumps({
+                "session_id": f"batch-{i}",
+                "timestamp": timestamp,
+                "turn_text": f"Substantive discussion about batching topic {i}.",
+            }) + "\n")
+    return pending
+
+
+def test_worker_defers_below_min_batch():
+    """Fresh turns below worker_min_batch_turns defer: no claude call, no
+    watermark advance; once the batch fills up, one run lands everything."""
+    import datetime as _dt
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake, counter = _write_fake_claude_sequence(tmpdir, [EXTRACTION])
+        config = _write_config(tmpdir, vault, fake,
+                               worker_min_batch_turns=4, worker_gleaning=0)
+        now = _dt.datetime.now().isoformat()
+        _seed_pending_at(vault, 2, now)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["processed"] == 0
+        assert summary["deferred"] == 2
+        assert not os.path.exists(counter), "deferred run must not invoke claude"
+        state_path = os.path.join(vault, "_meta", "worker-state.json")
+        assert not os.path.exists(state_path) or \
+            _read_state(vault).get("offset", 0) == 0, \
+            "deferral must not advance the watermark"
+
+        # Two more turns reach the threshold → the whole batch lands at once
+        pending = _seed_pending_at(vault, 2, now)
+        result2 = _run_worker(vault, config, check=True)
+        summary2 = json.loads(result2.stdout)
+        assert summary2["processed"] == 4
+        assert _read_state(vault)["offset"] == os.path.getsize(pending)
+        print("  ✅ worker: small fresh batch deferred, full batch lands")
+
+
+def test_worker_overdue_turns_force_processing():
+    """A batch below the threshold still lands once its oldest turn exceeds
+    worker_max_batch_age_hours."""
+    import datetime as _dt
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake, _ = _write_fake_claude_sequence(tmpdir, [EXTRACTION])
+        config = _write_config(tmpdir, vault, fake, worker_min_batch_turns=10,
+                               worker_max_batch_age_hours=24, worker_gleaning=0)
+        old = (_dt.datetime.now() - _dt.timedelta(hours=25)).isoformat()
+        _seed_pending_at(vault, 1, old)
+
+        result = _run_worker(vault, config, check=True)
+        summary = json.loads(result.stdout)
+        assert summary["processed"] == 1, summary
+        print("  ✅ worker: overdue turn overrides the batch threshold")
+
+
+def test_worker_bad_timestamp_processed_not_stranded():
+    """A pending turn with an unparseable timestamp counts as overdue —
+    processed rather than deferred forever."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        fake, _ = _write_fake_claude_sequence(tmpdir, [EXTRACTION])
+        config = _write_config(tmpdir, vault, fake, worker_min_batch_turns=10,
+                               worker_gleaning=0)
+        _seed_pending_at(vault, 1, "not-a-timestamp")
+
+        result = _run_worker(vault, config, check=True)
+        assert json.loads(result.stdout)["processed"] == 1
+        print("  ✅ worker: unparseable timestamp processes instead of stranding")
+
+
 if __name__ == "__main__":
     test_worker_drains_and_advances_watermark()
     test_worker_no_pending_file()
@@ -638,4 +859,11 @@ if __name__ == "__main__":
     test_worker_malformed_date_replaced_with_today()
     test_worker_consolidation_marker_and_counter_reset()
     test_consolidation_reset_clears_due_marker()
+    test_worker_gleaning_merges_missed_items()
+    test_worker_gleaning_empty_round_stops_early()
+    test_worker_gleaning_failure_does_not_fail_batch()
+    test_worker_gleaning_disabled_single_invocation()
+    test_worker_defers_below_min_batch()
+    test_worker_overdue_turns_force_processing()
+    test_worker_bad_timestamp_processed_not_stranded()
     print("\n🎉 All worker tests passed!")

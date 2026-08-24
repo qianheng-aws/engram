@@ -54,6 +54,11 @@ def extract_tokens(tool_name, tool_input):
         raw = os.path.splitext(os.path.basename(raw))[0]
     elif tool_name == "Agent":
         raw = tool_input.get("description", "")
+    elif tool_name == "exec_command":
+        # Codex shell tool: search/read commands carry their targets in `cmd`
+        raw = tool_input.get("cmd", "")
+        if not isinstance(raw, str):
+            raw = " ".join(str(a) for a in raw) if isinstance(raw, list) else ""
     else:
         return set()
 
@@ -93,8 +98,11 @@ def main():
 
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input", {})
+    # Codex extends the Claude hook payload with turn_id; Claude Code has no
+    # such field. Used to pick the output wire format each harness accepts.
+    is_codex = "turn_id" in payload
 
-    if tool_name not in ("Grep", "Glob", "Read", "Agent"):
+    if tool_name not in ("Grep", "Glob", "Read", "Agent", "exec_command"):
         return
 
     tokens = extract_tokens(tool_name, tool_input)
@@ -143,7 +151,15 @@ def main():
 
         if parts:
             msg = "engram: Related knowledge from prior sessions:\n" + "\n".join(f"- {p}" for p in parts)
-            print(json.dumps({"message": msg}))
+            if is_codex:
+                # Codex parses PreToolUse stdout with deny_unknown_fields, so
+                # only the standard hookSpecificOutput wire injects context.
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "additionalContext": msg,
+                }}))
+            else:
+                print(json.dumps({"message": msg}))
     except Exception:
         return
 

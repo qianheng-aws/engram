@@ -95,6 +95,27 @@ Optional:
 - `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
 - `engram auto off` — disable auto-capture again at any time
 
+### Using with Codex CLI
+
+Engram also works under [Codex CLI](https://developers.openai.com/codex/cli) (tested with 0.146+): Codex's hook engine is Claude-compatible — same event names, same stdin payload, same context-injection semantics — so the same hook scripts serve both harnesses. One vault, two frontends: sessions from Claude Code and Codex land in the same knowledge graph.
+
+Install the Python CLI first (see above), then register the hooks and slash-command prompts with Codex:
+
+```bash
+engram codex-setup   # writes ~/.codex/hooks.json + copies prompts to ~/.codex/prompts/
+engram auto on       # if you haven't already — capture is shared with Claude Code
+```
+
+What this does:
+- **Hooks** — merges engram's four hooks (`UserPromptSubmit` memory injection, `Stop`/`SessionEnd` background capture, `PreToolUse` entity context on `exec_command`) into `~/.codex/hooks.json`. Codex plugins can't ship hooks, so they're registered at the user level with absolute paths. The merge is idempotent and preserves any hooks you already have; a hooks.json it cannot parse aborts the setup instead of being overwritten.
+- **Prompts** — copies `plugin/commands/*.md` to `~/.codex/prompts/`, so `/engram`, `/engram-query`, `/engram-status` etc. work as Codex slash commands.
+
+Notes:
+- Codex prompts you to **trust the new hooks** on the first interactive run — approve them once and they persist.
+- The background worker still extracts via `claude -p`, so keep Claude Code installed even if you drive sessions from Codex (`worker_claude_bin` in the config points elsewhere if needed).
+- Set `CODEX_HOME` before running setup if your Codex home is not `~/.codex`.
+- Re-run `engram codex-setup` after moving the repo — the hooks reference absolute paths.
+
 ## 🔄 Updating
 
 Engram has two parts — the Python CLI and the Claude Code plugin — update both.
@@ -286,6 +307,7 @@ engram init [PATH]                              # Initialize vault + register in
 engram auto [on|off|status]                     # Toggle auto-capture (run `on` once to enable hooks)
 engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
 engram uninstall                                # Remove from ~/.claude/CLAUDE.md
+engram codex-setup                              # Register hooks + prompts with Codex CLI (~/.codex)
 
 # Background worker
 engram worker                                   # Drain pending.jsonl, extract, replay
@@ -325,6 +347,7 @@ engram consolidation --reset                    # Reset counter (after full cons
   "worker_model": null,
   "worker_consolidation_every": 10,
   "worker_max_turns_per_run": 20,
+  "worker_gleaning": 1,
   "context_max_chars": 2000
 }
 ```
@@ -333,6 +356,9 @@ engram consolidation --reset                    # Reset counter (after full cons
 - `worker_model` — Model override for worker (default: `null`, inherits from CC session)
 - `worker_consolidation_every` — Mark consolidation-due after N replays (default: `10`)
 - `worker_max_turns_per_run` — Max queued turns extracted per worker run; leftovers drain on the next spawn (default: `20`)
+- `worker_gleaning` — LightRAG-style gleaning rounds after the initial extraction: each round re-prompts the model with its previous output and merges in anything it missed; an empty round stops early, and a failed round never fails the batch. `0` disables (default: `1`)
+- `worker_min_batch_turns` — batching gate: a worker run defers (queue untouched, no LLM call) until at least this many turns are pending. Trades memory freshness for fewer extraction calls (default: `1` = process every run)
+- `worker_max_batch_age_hours` — overrides the batch gate once the oldest pending turn is this old, so a quiet queue still lands (default: `24`)
 - `context_max_chars` — Max chars in UserPromptSubmit injection (default: `2000`)
 
 ## 📄 License
