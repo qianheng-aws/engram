@@ -95,26 +95,31 @@ Optional:
 - `engram init ~/custom-vault` — use a custom vault path (default: `~/.engram/vault`)
 - `engram auto off` — disable auto-capture again at any time
 
-### Using with Codex CLI
+### Using with Codex CLI and Desktop
 
 Engram also works under [Codex CLI](https://developers.openai.com/codex/cli) (tested with 0.146+): Codex's hook engine is Claude-compatible — same event names, same stdin payload, same context-injection semantics — so the same hook scripts serve both harnesses. One vault, two frontends: sessions from Claude Code and Codex land in the same knowledge graph.
 
-Install the Python CLI first (see above), then register the hooks and slash-command prompts with Codex:
+Install the Python CLI first (see above), register the hooks, then install the
+repo's Codex plugin:
 
 ```bash
-engram codex-setup   # writes ~/.codex/hooks.json + copies prompts to ~/.codex/prompts/
-engram auto on       # if you haven't already — capture is shared with Claude Code
+engram codex-setup
+engram auto on
+codex plugin marketplace add /absolute/path/to/engram
+codex plugin add engram@engram-local
 ```
 
 What this does:
-- **Hooks** — merges engram's four hooks (`UserPromptSubmit` memory injection, `Stop`/`SessionEnd` background capture, `PreToolUse` entity context on `exec_command`) into `~/.codex/hooks.json`. Codex plugins can't ship hooks, so they're registered at the user level with absolute paths. The merge is idempotent and preserves any hooks you already have; a hooks.json it cannot parse aborts the setup instead of being overwritten.
-- **Prompts** — copies `plugin/commands/*.md` to `~/.codex/prompts/`, so `/engram`, `/engram-query`, `/engram-status` etc. work as Codex slash commands.
+- **Hooks** — merges engram's four hooks (`UserPromptSubmit` memory injection, `Stop`/`SessionEnd` background capture, `PreToolUse` entity context on `exec_command`) into `~/.codex/hooks.json`. They remain user-level so Codex can use its own matcher and timeout semantics without duplicating the Claude plugin hooks. The merge is idempotent and preserves any hooks you already have; a hooks.json it cannot parse aborts the setup instead of being overwritten.
+- **Plugin** — installs the Engram card and `$engram` skill for Codex Desktop and CLI. Use `$engram`, `$engram query ...`, or ask naturally for Engram status, recall, capture, or consolidation.
+- **Prompt fallback** — copies the legacy command documents to `~/.codex/prompts/`. In Codex CLI/IDE they are invoked as `/prompts:engram`, not `/engram`. Custom prompts are deprecated and do not appear as Desktop slash commands.
 
 Notes:
 - Codex prompts you to **trust the new hooks** on the first interactive run — approve them once and they persist.
 - The background worker still extracts via `claude -p`, so keep Claude Code installed even if you drive sessions from Codex (`worker_claude_bin` in the config points elsewhere if needed).
 - Set `CODEX_HOME` before running setup if your Codex home is not `~/.codex`.
 - Re-run `engram codex-setup` after moving the repo — the hooks reference absolute paths.
+- Restart Codex and start a new task after installing or updating the plugin.
 
 ## 🔄 Updating
 
@@ -307,7 +312,7 @@ engram init [PATH]                              # Initialize vault + register in
 engram auto [on|off|status]                     # Toggle auto-capture (run `on` once to enable hooks)
 engram install                                  # Re-register in ~/.claude/CLAUDE.md (auto on init)
 engram uninstall                                # Remove from ~/.claude/CLAUDE.md
-engram codex-setup                              # Register hooks + prompts with Codex CLI (~/.codex)
+engram codex-setup                              # Register Codex hooks + legacy CLI prompt fallbacks
 
 # Background worker
 engram worker                                   # Drain pending.jsonl, extract, replay

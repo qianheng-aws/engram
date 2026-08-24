@@ -2454,11 +2454,13 @@ def _merge_codex_hooks(existing, entries):
 
 
 def cmd_codex_setup(args):
-    """Register engram's hooks and prompts with a local Codex CLI install.
+    """Register engram's hooks and CLI prompt fallbacks with local Codex.
 
     Additive only: writes <codex_home>/hooks.json (merging with any existing
-    hooks) and copies plugin/commands/*.md into <codex_home>/prompts/ so the
-    /engram slash commands work in Codex. Claude Code config is untouched.
+    hooks) and copies plugin/commands/*.md into <codex_home>/prompts/. The
+    prompts use Codex's deprecated /prompts:<name> syntax in CLI/IDE; the
+    Codex app uses the separately installed $engram plugin skill. Claude Code
+    config is untouched.
     """
     codex_home = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
     os.makedirs(codex_home, exist_ok=True)
@@ -2497,8 +2499,8 @@ def cmd_codex_setup(args):
         f.write("\n")
     os.rename(tmp_path, hooks_path)
 
-    # 2. Install slash-command prompts (Codex custom prompts are markdown
-    # files in <codex_home>/prompts; filename = command name)
+    # 2. Install deprecated CLI/IDE custom-prompt fallbacks. The Codex app
+    # discovers the plugin skill instead; custom prompts are not app commands.
     prompts_dir = os.path.join(codex_home, "prompts")
     os.makedirs(prompts_dir, exist_ok=True)
     prompts = []
@@ -2507,7 +2509,7 @@ def cmd_codex_setup(args):
             if fname.endswith(".md"):
                 shutil.copyfile(os.path.join(commands_dir, fname),
                                 os.path.join(prompts_dir, fname))
-                prompts.append("/" + fname[:-3])
+                prompts.append("/prompts:" + fname[:-3])
 
     hook_enabled = os.path.exists(
         os.path.join(args.vault, "_meta", "hook-enabled"))
@@ -2517,10 +2519,14 @@ def cmd_codex_setup(args):
         "events": sorted(_codex_hook_entries(bin_dir).keys()),
         "prompts_dir": prompts_dir,
         "prompts": prompts,
+        "plugin_manifest": os.path.join(repo_root, "plugin", ".codex-plugin",
+                                        "plugin.json"),
+        "skill": "$engram",
         "capture_enabled": hook_enabled,
         "notes": ([] if hook_enabled else
                   ["background capture is off — run `engram auto on` to enable"]) + [
             "Codex asks you to trust new hooks on first interactive run",
+            "Install the repo marketplace plugin to use $engram in the Codex app",
         ],
     }, indent=2))
 

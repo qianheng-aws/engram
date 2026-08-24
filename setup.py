@@ -22,9 +22,12 @@ setup(
     package_data={
         "plugin": [
             ".claude-plugin/*.json",
+            ".codex-plugin/*.json",
             "bin/*",
             "commands/*.md",
             "hooks/*.json",
+            "skills/*/*.md",
+            "skills/*/agents/*.yaml",
         ],
     },
     classifiers=[

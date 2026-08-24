@@ -1,0 +1,7 @@
+interface:
+  display_name: "Engram"
+  short_description: "Query and maintain the persistent memory graph"
+  default_prompt: "Use $engram to extract durable knowledge from this task."
+
+policy:
+  allow_implicit_invocation: true

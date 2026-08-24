@@ -1,0 +1,20 @@
+{
+  "name": "engram-local",
+  "interface": {
+    "displayName": "Engram Local"
+  },
+  "plugins": [
+    {
+      "name": "engram",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

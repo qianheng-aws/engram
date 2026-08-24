@@ -1,9 +1,10 @@
 """Tests for Codex CLI compatibility.
 
-Covers the three integration points:
+Covers the four integration points:
 1. engram-hook parses Codex rollout transcripts (and still parses CC format)
 2. engram-pretool handles Codex's exec_command tool + hookSpecificOutput wire
-3. `engram codex-setup` merges hooks.json idempotently and installs prompts
+3. the Codex plugin exposes the $engram skill through a repo marketplace
+4. `engram codex-setup` merges hooks.json idempotently and installs prompt fallbacks
 
 No real Codex or model calls — everything runs against fixture files.
 """
@@ -16,6 +17,8 @@ import tempfile
 
 CLI = [sys.executable, "-m", "engram_cli"]
 PLUGIN_BIN = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin")
+REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
+PLUGIN_ROOT = os.path.join(REPO_ROOT, "plugin")
 
 
 def _make_vault(tmpdir):
@@ -233,6 +236,33 @@ def test_pretool_claude_output_format_regression():
 
 # ── engram codex-setup ────────────────────────────────────
 
+def test_codex_plugin_bundle_is_discoverable():
+    with open(os.path.join(PLUGIN_ROOT, ".codex-plugin", "plugin.json")) as f:
+        manifest = json.load(f)
+    assert manifest["name"] == "engram"
+    assert manifest["skills"] == "./skills/"
+    assert manifest["interface"]["displayName"] == "Engram"
+
+    skill_path = os.path.join(PLUGIN_ROOT, "skills", "engram", "SKILL.md")
+    with open(skill_path) as f:
+        skill = f.read()
+    assert skill.startswith("---\nname: engram\n")
+    assert "../../commands/engram.md" in skill
+
+    with open(os.path.join(REPO_ROOT, ".agents", "plugins", "marketplace.json")) as f:
+        marketplace = json.load(f)
+    assert marketplace["name"] == "engram-local"
+    entry = marketplace["plugins"][0]
+    assert entry["name"] == "engram"
+    assert entry["source"] == {"source": "local", "path": "./plugin"}
+
+    with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")) as f:
+        claude_manifest = json.load(f)
+    assert claude_manifest["hooks"] == "./hooks/claude-hooks.json"
+    with open(os.path.join(PLUGIN_ROOT, "hooks", "hooks.json")) as f:
+        assert json.load(f)["hooks"] == {}, "Codex plugin must not duplicate user hooks"
+    print("  ✅ codex plugin: manifest + $engram skill + marketplace discoverable")
+
 def _run_codex_setup(vault, config, codex_home):
     result = subprocess.run(
         CLI + ["codex-setup", "--vault", vault],
@@ -267,8 +297,10 @@ def test_codex_setup_writes_hooks_and_prompts():
         prompts_dir = os.path.join(codex_home, "prompts")
         assert os.path.isfile(os.path.join(prompts_dir, "engram.md"))
         assert os.path.isfile(os.path.join(prompts_dir, "engram-query.md"))
+        assert "/prompts:engram" in summary["prompts"]
+        assert summary["skill"] == "$engram"
         assert summary["capture_enabled"] is True
-        print("  ✅ codex-setup: hooks.json + prompts installed")
+        print("  ✅ codex-setup: hooks.json + CLI prompt fallbacks installed")
 
 
 def test_codex_setup_idempotent_and_preserves_foreign_hooks():
@@ -326,6 +358,7 @@ if __name__ == "__main__":
     test_stop_hook_claude_format_regression()
     test_pretool_codex_exec_command_emits_hook_specific_output()
     test_pretool_claude_output_format_regression()
+    test_codex_plugin_bundle_is_discoverable()
     test_codex_setup_writes_hooks_and_prompts()
     test_codex_setup_idempotent_and_preserves_foreign_hooks()
     test_codex_setup_refuses_corrupt_hooks_json()
