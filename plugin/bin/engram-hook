@@ -10,8 +10,8 @@ hook payload fields (session_id, transcript_path, last_assistant_message) but
 write transcripts in different formats, both handled by _normalize_entry.
 """
 
-import json
 import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -26,6 +26,9 @@ FALLBACK_VAULT = Path.home() / ".engram" / "vault"
 # plenty of context for extraction while keeping each append cheap.
 MAX_TURN_TEXT = 20000
 TRUNCATION_MARKER = "\n\n[...truncated]"
+DEFAULT_WORKER_MAX_TURNS_PER_RUN = 20
+DEFAULT_WORKER_MIN_BATCH_TURNS = 1
+DEFAULT_WORKER_MAX_BATCH_AGE_HOURS = 24
 
 
 def _cap_turn_text(text):
@@ -216,10 +219,12 @@ def _pending_batch_ready(vault_dir, config):
                 except (ValueError, UnicodeDecodeError):
                     continue
 
-        min_turns = config.get("worker_min_batch_turns", 1)
+        min_turns = config.get(
+            "worker_min_batch_turns", DEFAULT_WORKER_MIN_BATCH_TURNS)
         if not isinstance(min_turns, int) or min_turns < 1:
-            min_turns = 1
-        max_turns = config.get("worker_max_turns_per_run", 20)
+            min_turns = DEFAULT_WORKER_MIN_BATCH_TURNS
+        max_turns = config.get(
+            "worker_max_turns_per_run", DEFAULT_WORKER_MAX_TURNS_PER_RUN)
         if isinstance(max_turns, int) and max_turns >= 1:
             min_turns = min(min_turns, max_turns)
         if len(records) >= min_turns:
@@ -227,9 +232,10 @@ def _pending_batch_ready(vault_dir, config):
         if not records:
             return False
 
-        max_age = config.get("worker_max_batch_age_hours", 24)
+        max_age = config.get(
+            "worker_max_batch_age_hours", DEFAULT_WORKER_MAX_BATCH_AGE_HOURS)
         if not isinstance(max_age, (int, float)) or max_age < 0:
-            max_age = 24
+            max_age = DEFAULT_WORKER_MAX_BATCH_AGE_HOURS
         try:
             oldest = datetime.fromisoformat(records[0]["timestamp"])
             age_hours = (datetime.now() - oldest).total_seconds() / 3600

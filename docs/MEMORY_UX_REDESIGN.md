@@ -253,9 +253,8 @@ All paths relative to repo root `/workplace/qianheng/engram`.
 
 | File | Role | Key anchors |
 |------|------|-------------|
-| `plugin/hooks/hooks.json` | Hook registration (PreToolUse, Stop). Add UserPromptSubmit + SessionEnd here. | full file |
-| `plugin/bin/engram-hook` | **EDIT** — Stop hook; currently writes a breadcrumb to `_meta/queue/`. Upgrade to append full turns to `pending.jsonl`. | `_get_vault`, `main` |
-| `plugin/bin/engram-pretool` | Existing PreToolUse retrieval (weak token match). Reference for graph access from a hook; may keep as supplement or retire. | `extract_tokens`, `match_entities`, `main` |
+| `plugin/hooks/claude-hooks.json` | Claude hook registration for SessionStart, UserPromptSubmit, Stop, and SessionEnd. | full file |
+| `plugin/bin/engram-hook` | Stop/SessionEnd capture, batching gate, and worker spawn. | `_pending_batch_ready`, `main` |
 | `engram_cli.py` | CLI. Reuse `cmd_context` (injection payload), `cmd_query` (matched retrieval), `cmd_replay`+`_check_dedup` (landing), `cmd_auto` (toggle), consolidation cmds. Add `worker` (+ optional `context --write-cache`). | `cmd_auto`:250, `cmd_replay`:355, `_check_dedup`:~268, `cmd_query`:794, `cmd_context`:1014, `cmd_consolidation`:1437, `main`:1469 |
 | `engram/graph.py` | `MemoryGraph` API. Use for god nodes + neighbors in the read hook/cache. | `god_nodes`:463, `get_entity`:77, `get_neighbors`:82, `all_entity_names`:74, `suggested_questions`:525, `detect_communities`:339 |
 | `plugin/commands/engram.md` | The **extraction rules + JSON schema** the worker must embed in its `claude -p` prompt. Source of truth for extraction criteria, naming, confidence tagging, evidence/hyperedge schema. | full file |

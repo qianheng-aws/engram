@@ -1,6 +1,6 @@
 {
   "name": "engram",
-  "version": "0.2.0+codex.20260824075154",
+  "version": "0.2.1+codex.20260825090612",
   "description": "Persistent memory for Codex backed by an Obsidian knowledge graph",
   "author": {
     "name": "qianheng",

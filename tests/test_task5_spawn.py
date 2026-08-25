@@ -2,10 +2,13 @@
 
 import json
 import os
+import runpy
 import subprocess
 import sys
 import tempfile
 import time
+
+from engram_cli import WORKER_DEFAULTS
 
 
 def _make_vault(tmpdir):
@@ -26,6 +29,18 @@ def _make_stub_engram(stub_dir, marker_path):
         f.write("    time.sleep(5)  # Sleep to verify detachment\n")
     os.chmod(stub_path, 0o755)
     return stub_path
+
+
+def test_hook_batch_defaults_match_worker_defaults():
+    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                             "plugin", "bin", "engram-hook")
+    hook = runpy.run_path(hook_path)
+    assert hook["DEFAULT_WORKER_MIN_BATCH_TURNS"] == \
+        WORKER_DEFAULTS["worker_min_batch_turns"]
+    assert hook["DEFAULT_WORKER_MAX_TURNS_PER_RUN"] == \
+        WORKER_DEFAULTS["worker_max_turns_per_run"]
+    assert hook["DEFAULT_WORKER_MAX_BATCH_AGE_HOURS"] == \
+        WORKER_DEFAULTS["worker_max_batch_age_hours"]
 
 
 def test_stop_hook_spawns_worker_on_substantive_turn():
@@ -380,6 +395,7 @@ def test_sessionend_no_spawn_when_disabled():
 
 if __name__ == "__main__":
     print("Testing Task 5: Stop/SessionEnd detached worker spawn...")
+    test_hook_batch_defaults_match_worker_defaults()
     test_stop_hook_spawns_worker_on_substantive_turn()
     test_stop_hook_defers_spawn_until_batch_ready()
     test_stop_hook_injection_only_does_not_capture()

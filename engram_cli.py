@@ -1434,6 +1434,10 @@ def cmd_lint(args):
 
 # ── worker ─────────────────────────────────────────────
 
+DEFAULT_WORKER_MAX_TURNS_PER_RUN = 20
+DEFAULT_WORKER_MIN_BATCH_TURNS = 1
+DEFAULT_WORKER_MAX_BATCH_AGE_HOURS = 24
+
 WORKER_DEFAULTS = {
     "worker_claude_bin": "claude",
     "worker_model": None,
@@ -1441,7 +1445,7 @@ WORKER_DEFAULTS = {
     # Max pending turns drained per worker run. Bounds the extraction prompt
     # (~20KB/turn cap → ≤~400KB) and keeps a huge backlog from producing one
     # unmanageable batch; leftover lines are picked up by the next run.
-    "worker_max_turns_per_run": 20,
+    "worker_max_turns_per_run": DEFAULT_WORKER_MAX_TURNS_PER_RUN,
     # When true, the worker spawns a detached `engram consolidate` run
     # instead of just writing the consolidation-due marker.
     "worker_auto_consolidate": False,
@@ -1451,10 +1455,10 @@ WORKER_DEFAULTS = {
     "worker_gleaning": 1,
     # Batching gate: skip the run (leaving the queue untouched) until at
     # least this many turns are pending. 1 = process every run (default).
-    "worker_min_batch_turns": 1,
+    "worker_min_batch_turns": DEFAULT_WORKER_MIN_BATCH_TURNS,
     # ...unless the oldest pending turn is older than this, which forces a
     # run regardless of batch size so a quiet queue still lands eventually.
-    "worker_max_batch_age_hours": 24,
+    "worker_max_batch_age_hours": DEFAULT_WORKER_MAX_BATCH_AGE_HOURS,
     # Compact pending.jsonl after enough consumed bytes accumulate. A separate
     # pending lock preserves turns appended while the worker is running.
     "worker_compact_after_bytes": 5 * 1024 * 1024,

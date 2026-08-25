@@ -10,6 +10,7 @@ No real Codex or model calls — everything runs against fixture files.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -164,75 +165,6 @@ def test_stop_hook_claude_format_regression():
         print("  ✅ claude transcript format: unchanged behavior")
 
 
-# ── engram-pretool: Codex payload + output wire ───────────
-
-def _seed_graph(vault, config, name="DEPLOYMENT_PIPELINE"):
-    extraction = {
-        "date": "2026-08-19",
-        "entities": [{"name": name, "entity_type": "PROJECT",
-                      "description": "CI/CD pipeline entity for pretool tests",
-                      "confidence": "EXTRACTED"}],
-        "relations": [],
-        "daily_summary": "seed",
-    }
-    result = subprocess.run(
-        CLI + ["replay", "--stdin", "--vault", vault],
-        input=json.dumps(extraction), capture_output=True, text=True,
-        env={**os.environ, "ENGRAM_CONFIG": config},
-    )
-    assert result.returncode == 0, result.stderr
-
-
-def _run_pretool(payload, config):
-    return subprocess.run(
-        [sys.executable, os.path.join(PLUGIN_BIN, "engram-pretool")],
-        input=json.dumps(payload), capture_output=True, text=True,
-        env={**os.environ, "ENGRAM_CONFIG": config},
-    )
-
-
-def test_pretool_codex_exec_command_emits_hook_specific_output():
-    """Codex payload (turn_id + exec_command) matching an entity emits the
-    hookSpecificOutput wire that Codex's strict parser accepts."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        config = _write_config(tmpdir, vault)
-        _seed_graph(vault, config)
-
-        result = _run_pretool({
-            "session_id": "s", "turn_id": "t",
-            "tool_name": "exec_command",
-            "tool_input": {"cmd": "grep -r deployment_pipeline src/"},
-        }, config)
-        assert result.returncode == 0, result.stderr
-        out = json.loads(result.stdout)
-        specific = out["hookSpecificOutput"]
-        assert specific["hookEventName"] == "PreToolUse"
-        assert "DEPLOYMENT_PIPELINE" in specific["additionalContext"]
-        assert "message" not in out
-        print("  ✅ pretool: codex exec_command → hookSpecificOutput wire")
-
-
-def test_pretool_claude_output_format_regression():
-    """Claude Code payload (no turn_id) keeps the legacy {'message': ...}
-    output untouched."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        config = _write_config(tmpdir, vault)
-        _seed_graph(vault, config)
-
-        result = _run_pretool({
-            "session_id": "s",
-            "tool_name": "Grep",
-            "tool_input": {"pattern": "deployment_pipeline"},
-        }, config)
-        assert result.returncode == 0, result.stderr
-        out = json.loads(result.stdout)
-        assert "message" in out and "hookSpecificOutput" not in out
-        assert "DEPLOYMENT_PIPELINE" in out["message"]
-        print("  ✅ pretool: claude payload → legacy message format unchanged")
-
-
 # ── engram codex-setup ────────────────────────────────────
 
 def test_codex_plugin_bundle_is_discoverable():
@@ -241,6 +173,11 @@ def test_codex_plugin_bundle_is_discoverable():
     assert manifest["name"] == "engram"
     assert manifest["skills"] == "./skills/"
     assert manifest["interface"]["displayName"] == "Engram"
+
+    from engram import __version__
+    with open(os.path.join(REPO_ROOT, "setup.py")) as f:
+        setup_version = re.search(r'version="([^"]+)"', f.read()).group(1)
+    assert manifest["version"].split("+", 1)[0] == __version__ == setup_version
 
     skill_path = os.path.join(PLUGIN_ROOT, "skills", "engram", "SKILL.md")
     with open(skill_path) as f:
@@ -257,7 +194,7 @@ def test_codex_plugin_bundle_is_discoverable():
 
     with open(os.path.join(PLUGIN_ROOT, ".claude-plugin", "plugin.json")) as f:
         claude_manifest = json.load(f)
-    assert claude_manifest["version"] == "0.2.0"
+    assert claude_manifest["version"] == __version__
     assert claude_manifest["hooks"] == "./hooks/claude-hooks.json"
     with open(os.path.join(REPO_ROOT, ".claude-plugin", "marketplace.json")) as f:
         claude_marketplace = json.load(f)
@@ -373,8 +310,6 @@ if __name__ == "__main__":
     test_stop_hook_parses_codex_rollout()
     test_stop_hook_codex_skips_injected_user_items()
     test_stop_hook_claude_format_regression()
-    test_pretool_codex_exec_command_emits_hook_specific_output()
-    test_pretool_claude_output_format_regression()
     test_codex_plugin_bundle_is_discoverable()
     test_codex_setup_writes_hooks_and_prompts()
     test_codex_setup_idempotent_and_preserves_foreign_hooks()

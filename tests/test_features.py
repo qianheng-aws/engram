@@ -1,4 +1,4 @@
-"""Tests for new features: confidence tagging, god nodes, surprising connections, PreToolUse hook."""
+"""Tests for confidence tagging, god nodes, and surprising connections."""
 
 import json
 import os
@@ -326,96 +326,6 @@ def test_cli_replay_confidence():
             if name == "TEST_B":
                 assert edge["confidence"] == "INFERRED"
         print("  ✅ CLI replay stores confidence tags")
-
-
-# ── Test PreToolUse hook ──────────────────────────────────
-
-def test_pretool_hook_with_graph():
-    """engram-pretool should output a message when graph exists."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-pretool")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        vault = _make_vault(tmpdir)
-        _build_test_graph(vault)
-
-        # Write a temporary config pointing to this vault
-        config_dir = os.path.join(tmpdir, "config")
-        os.makedirs(config_dir, exist_ok=True)
-        config_path = os.path.join(config_dir, "config.json")
-        with open(config_path, "w") as f:
-            json.dump({"vault": vault}, f)
-
-        # Set up vault at ~/.engram/vault (via HOME override)
-        alt_vault = os.path.join(tmpdir, ".engram", "vault")
-        os.makedirs(os.path.join(alt_vault, "_meta"), exist_ok=True)
-        _build_test_graph_at(alt_vault)
-
-        alt_config = os.path.join(tmpdir, ".engram", "config.json")
-        with open(alt_config, "w") as f:
-            json.dump({"vault": alt_vault}, f)
-
-        # Grep for "stderr" should match STDERR_PIPE_BLOCKING entity
-        payload = json.dumps({"tool_name": "Grep", "tool_input": {"pattern": "stderr_pipe"}})
-
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "HOME": tmpdir},
-        )
-        assert result.returncode == 0
-        data = json.loads(result.stdout)
-        assert "message" in data
-        assert "STDERR_PIPE_BLOCKING" in data["message"]
-        print("  ✅ PreToolUse hook injects matching entity context")
-
-        # Grep with no matching tokens should be silent
-        payload_nomatch = json.dumps({"tool_name": "Grep", "tool_input": {"pattern": "unrelated_thing"}})
-        result_nomatch = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload_nomatch, capture_output=True, text=True,
-            env={**os.environ, "HOME": tmpdir},
-        )
-        assert result_nomatch.returncode == 0
-        assert result_nomatch.stdout.strip() == ""
-        print("  ✅ PreToolUse hook silent on non-matching pattern")
-
-
-def _build_test_graph_at(vault):
-    """Build a minimal graph at the given vault path."""
-    g = MemoryGraph(vault)
-    g.upsert_entity("STDERR_PIPE_BLOCKING", {"entity_type": "CONCEPT", "description": "Bug where stderr fills 64KB buffer"})
-    g.save()
-
-
-def test_pretool_hook_no_graph():
-    """engram-pretool should output nothing when no graph exists."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-pretool")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        payload = json.dumps({"tool_name": "Grep"})
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "HOME": tmpdir},
-        )
-        assert result.stdout.strip() == ""
-        assert result.returncode == 0
-        print("  ✅ PreToolUse hook silent when no graph")
-
-
-def test_pretool_hook_ignores_non_search():
-    """engram-pretool should ignore non-search tools."""
-    hook_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugin", "bin", "engram-pretool")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        payload = json.dumps({"tool_name": "Edit"})
-        result = subprocess.run(
-            [sys.executable, hook_path],
-            input=payload, capture_output=True, text=True,
-            env={**os.environ, "HOME": tmpdir},
-        )
-        assert result.stdout.strip() == ""
-        print("  ✅ PreToolUse hook ignores non-search tools")
 
 
 # ── Test rich content ─────────────────────────────────────
@@ -1100,10 +1010,6 @@ if __name__ == "__main__":
     test_cli_community_surprising()
     test_cli_replay_confidence()
 
-    print("\nTesting PreToolUse hook...")
-    test_pretool_hook_with_graph()
-    test_pretool_hook_no_graph()
-    test_pretool_hook_ignores_non_search()
     test_engram_hook_uses_config_vault()
 
     print("\nTesting rich content...")
