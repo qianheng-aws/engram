@@ -72,6 +72,33 @@ def test_replay_daily_note():
         print("  ✅ replay: daily note created with entities and summary")
 
 
+def test_replay_update_preserves_created_date():
+    """A later replay updating an existing entity must not shift its
+    `created:` date — only last_updated follows the new replay."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        vault = _make_vault(tmpdir)
+        _seed_replay(vault)  # PROJECT_A created 2026-04-08
+
+        payload = json.dumps({
+            "date": "2026-04-15",
+            "entities": [
+                {"name": "PROJECT_A", "entity_type": "PROJECT",
+                 "description": "Follow-up work a week later",
+                 "confidence": "EXTRACTED"},
+            ],
+            "relations": [],
+            "daily_summary": "Revisited Project A.",
+        })
+        _run(["replay", "--stdin"], vault, stdin_data=payload)
+
+        entity_path = os.path.join(vault, "entities", "projects", "PROJECT_A.md")
+        with open(entity_path) as f:
+            content = f.read()
+        assert 'created: "[[daily/2026-04-08|2026-04-08]]"' in content, content[:400]
+        assert 'last_updated: "[[daily/2026-04-15|2026-04-15]]"' in content, content[:400]
+        print("  ✅ replay: update keeps created date, advances last_updated")
+
+
 def test_replay_dedup():
     with tempfile.TemporaryDirectory() as tmpdir:
         vault = _make_vault(tmpdir)

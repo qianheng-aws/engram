@@ -102,6 +102,11 @@ class MemoryGraph:
                     attrs["description"] = f"{old_desc}{GRAPH_FIELD_SEP}{new_desc}" if old_desc else new_desc
             # Merge evidence: append-only (never overwrite existing refs)
             _merge_evidence(existing, attrs)
+            # source_id records the session that CREATED the entity (the
+            # markdown exporter derives `created:` from it) — later replays
+            # must not overwrite it, or created drifts to the latest update.
+            if "source_id" in existing:
+                attrs.pop("source_id", None)
             existing.update(attrs)
         else:
             self._graph.add_node(name, **attrs)
